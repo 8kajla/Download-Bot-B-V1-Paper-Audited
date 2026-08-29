@@ -120,7 +120,7 @@ strategy = ConvergenceStrategy(
     max_market_exposure=float(
         os.getenv(
             "MAX_MARKET_EXPOSURE",
-            "50",
+            "25",
         )
     ),
 
@@ -162,28 +162,28 @@ strategy = ConvergenceStrategy(
     layer_a_base_notional=float(
         os.getenv(
             "LAYER_A_BASE_NOTIONAL",
-            "0.10",
+            "0.15",
         )
     ),
 
     layer_a_max_notional=float(
         os.getenv(
             "LAYER_A_MAX_NOTIONAL",
-            "0.50",
+            "1.00",
         )
     ),
 
     layer_b_base_notional=float(
         os.getenv(
             "LAYER_B_BASE_NOTIONAL",
-            "5",
+            "2.00",
         )
     ),
 
     layer_b_max_notional=float(
         os.getenv(
             "LAYER_B_MAX_NOTIONAL",
-            "10",
+            "3.00",
         )
     ),
 
@@ -218,7 +218,7 @@ strategy = ConvergenceStrategy(
     layer_b_min_score=float(
         os.getenv(
             "LAYER_B_MIN_SCORE",
-            "0.50",
+            "0.82",
         )
     ),
 
@@ -232,7 +232,7 @@ strategy = ConvergenceStrategy(
     max_asset_exposure=float(
         os.getenv(
             "MAX_ASSET_EXPOSURE",
-            "50",
+            "35",
         )
     ),
 )
