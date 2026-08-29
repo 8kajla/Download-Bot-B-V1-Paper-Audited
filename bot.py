@@ -483,13 +483,8 @@ def report(books):
 
 def main():
 
-    global (
-        markets,
-        last_disc,
-        consecutive_errors,
-        last_maintenance,
-    )
-
+    global markets, last_disc, consecutive_errors, last_maintenance
+    
     startup_data_check()
 
     p(
