@@ -460,12 +460,16 @@ def test_signal_reason_contains_v2_marker():
 # HARD V2 CAPS
 # ============================================================
 
-def test_market_cap_cannot_exceed_25():
-    strategy = ConvergenceStrategy(
-        max_market_exposure=50,
-    )
+def test_global_exposure_default_is_100():
+    strategy = ConvergenceStrategy()
+    assert strategy.max_market_exposure == 100.0
 
-    assert strategy.max_market_exposure == 25.0
+
+def test_global_exposure_100_is_honored():
+    strategy = ConvergenceStrategy(
+        max_market_exposure=100,
+    )
+    assert strategy.max_market_exposure == 100.0
 
 
 def test_asset_cap_cannot_exceed_35():
