@@ -235,6 +235,13 @@ strategy = ConvergenceStrategy(
             "35",
         )
     ),
+
+    max_total_exposure=float(
+        os.getenv(
+            "MAX_TOTAL_EXPOSURE",
+            "25",
+        )
+    ),
 )
 
 
@@ -734,6 +741,8 @@ def main():
                     m["asset"]
                 )
 
+                total_exp = ledger.total_open_cost()
+
                 # ------------------------------------------------------
                 # STRATEGY DECISION
                 # ------------------------------------------------------
@@ -756,6 +765,7 @@ def main():
                     down_depth=das,
                     now=now,
                     asset_exposure=aexp,
+                    total_exposure=total_exp,
                 )
 
                 # ------------------------------------------------------
@@ -883,9 +893,40 @@ def main():
                         * float(sig.price),
                     )
 
+                    # Re-read all risk limits immediately before creating
+                    # the paper order. This is the final portfolio gate.
+                    total_exp = ledger.total_open_cost()
+                    market_exp = ledger.exposure(
+                        m["condition"]
+                    )
+                    asset_exp = asset_exposure(
+                        m["asset"]
+                    )
+
+                    global_remaining = max(
+                        0.0,
+                        float(strategy.max_total_exposure)
+                        - float(total_exp),
+                    )
+                    market_remaining = max(
+                        0.0,
+                        float(strategy.max_market_exposure)
+                        - float(market_exp),
+                    )
+                    asset_remaining = max(
+                        0.0,
+                        float(strategy.max_asset_exposure)
+                        - float(asset_exp),
+                    )
+
                     exec_notional = min(
-                        sig.notional,
+                        float(sig.notional),
                         depth_cap,
+                        float(strategy.max_order),
+                        global_remaining,
+                        market_remaining,
+                        asset_remaining,
+                        max(0.0, float(ledger.cash)),
                     )
 
                     # --------------------------------------------------
@@ -926,6 +967,22 @@ def main():
                             "down"
                         ],
                     }
+
+                    # --------------------------------------------------
+                    # FINAL EXECUTION SAFETY RECHECK
+                    # --------------------------------------------------
+
+                    if (
+                        float(m["end_ts"]) - time.time()
+                        <= hard_cutoff
+                    ):
+                        p(
+                            f'ENTRY BLOCKED | '
+                            f'asset={m["asset"]} | '
+                            f'side={sig.side} | '
+                            f'reason=HARD_CUTOFF_FINAL_RECHECK'
+                        )
+                        continue
 
                     # --------------------------------------------------
                     # PAPER ENTRY
