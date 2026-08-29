@@ -14,9 +14,9 @@ class Signal:
 
 class ConvergenceStrategy:
     """
-    BOT B V2
+    BOT B V2.1
 
-    Independent paper-trading strategy based on the observable behavior
+    Independent paper-trading strategy based on observable behavior
     found in the trader dataset.
 
     Price regimes:
@@ -26,19 +26,15 @@ class ConvergenceStrategy:
         CORE  : 0.70 <= price < 0.90
         HIGH  : 0.90 <= price < 0.995
 
-    IMPORTANT:
     The trader's private entry trigger is not observable in the dataset.
-    Therefore the signal logic below is an inferred hypothesis, not a
-    guaranteed reconstruction of the trader's strategy.
+    Therefore this is an inferred strategy, not a guaranteed reconstruction.
 
     Hard rule:
 
         No new entries during the final 60 seconds.
     """
 
-    # ============================================================
-    # PRICE REGIMES
-    # ============================================================
+    VERSION = "V2.1"
 
     CHEAP_MIN = 0.01
     CHEAP_MAX = 0.30
@@ -52,45 +48,28 @@ class ConvergenceStrategy:
     HIGH_MIN = 0.90
     HIGH_MAX = 0.995
 
-    # ============================================================
-    # INITIALIZATION
-    # ============================================================
-
     def __init__(
         self,
         bankroll=1000,
         max_market_exposure=25,
         max_order=10,
-
         layer_a_min_price=0.01,
         layer_a_max_price=0.30,
-
         layer_b_min_price=0.90,
         layer_b_max_price=0.995,
-
         layer_a_base_notional=0.15,
         layer_a_max_notional=1.00,
-
         layer_b_base_notional=2.00,
         layer_b_max_notional=3.00,
-
         start_sec=0,
         stop_sec=240,
-
         min_score=0.50,
-
         layer_a_min_score=0.45,
         layer_b_min_score=0.82,
-
         max_depth_participation=0.25,
-
         max_asset_exposure=35,
     ):
         self.bankroll = float(bankroll)
-
-        # ========================================================
-        # HARD V2 RISK CAPS
-        # ========================================================
 
         self.max_market_exposure = min(
             float(max_market_exposure),
@@ -107,19 +86,21 @@ class ConvergenceStrategy:
             10.0,
         )
 
-        # ========================================================
-        # PRICE REGIMES
-        # ========================================================
+        self.layer_a_min_price = float(
+            layer_a_min_price
+        )
 
-        self.layer_a_min_price = self.CHEAP_MIN
-        self.layer_a_max_price = self.CHEAP_MAX
+        self.layer_a_max_price = float(
+            layer_a_max_price
+        )
 
-        self.layer_b_min_price = self.HIGH_MIN
-        self.layer_b_max_price = self.HIGH_MAX
+        self.layer_b_min_price = float(
+            layer_b_min_price
+        )
 
-        # ========================================================
-        # CHEAP REGIME SIZING
-        # ========================================================
+        self.layer_b_max_price = float(
+            layer_b_max_price
+        )
 
         self.layer_a_base_notional = max(
             0.10,
@@ -127,27 +108,19 @@ class ConvergenceStrategy:
         )
 
         self.layer_a_max_notional = min(
-            1.00,
+            self.max_order,
             float(layer_a_max_notional),
         )
 
-        # ========================================================
-        # HIGH REGIME SIZING
-        # ========================================================
-
         self.layer_b_base_notional = min(
-            2.00,
+            self.max_order,
             float(layer_b_base_notional),
         )
 
         self.layer_b_max_notional = min(
-            3.00,
+            self.max_order,
             float(layer_b_max_notional),
         )
-
-        # ========================================================
-        # TIMING
-        # ========================================================
 
         self.start_sec = float(
             start_sec
@@ -157,10 +130,6 @@ class ConvergenceStrategy:
             stop_sec
         )
 
-        # ========================================================
-        # SIGNAL THRESHOLDS
-        # ========================================================
-
         self.min_score = float(
             min_score
         )
@@ -169,15 +138,10 @@ class ConvergenceStrategy:
             layer_a_min_score
         )
 
-        # HIGH regime must be very selective.
         self.layer_b_min_score = max(
             0.82,
             float(layer_b_min_score),
         )
-
-        # ========================================================
-        # ORDER BOOK LIMIT
-        # ========================================================
 
         self.max_depth_participation = min(
             0.25,
@@ -186,10 +150,6 @@ class ConvergenceStrategy:
                 float(max_depth_participation),
             ),
         )
-
-    # ============================================================
-    # HELPERS
-    # ============================================================
 
     @staticmethod
     def _clamp(
@@ -205,47 +165,37 @@ class ConvergenceStrategy:
             ),
         )
 
-    # ============================================================
-    # PRICE REGIME
-    # ============================================================
-
-    @staticmethod
-    def _regime(price):
+    def _regime(self, price):
         price = float(price)
 
         if (
-            0.01
+            self.layer_a_min_price
             <= price
-            < 0.30
+            <
+            self.layer_a_max_price
         ):
             return "CHEAP"
 
         if (
-            0.30
+            self.layer_a_max_price
             <= price
-            < 0.70
+            <
+            self.layer_b_min_price
         ):
-            return "MID"
+            if price < 0.70:
+                return "MID"
 
-        if (
-            0.70
-            <= price
-            < 0.90
-        ):
             return "CORE"
 
         if (
-            0.90
+            self.layer_b_min_price
             <= price
-            < 0.995
+            <
+            self.layer_b_max_price
         ):
             return "HIGH"
 
         return None
-
-    # ============================================================
-    # MARKET FEATURES
-    # ============================================================
 
     @staticmethod
     def _features(
@@ -257,9 +207,13 @@ class ConvergenceStrategy:
         if ask is None:
             return None
 
-        ask = float(
-            ask
-        )
+        try:
+            ask = float(ask)
+        except (
+            TypeError,
+            ValueError,
+        ):
+            return None
 
         if not (
             0.0
@@ -268,24 +222,28 @@ class ConvergenceStrategy:
         ):
             return None
 
-        if bid is not None:
-            bid = float(
-                bid
-            )
+        bid_value = None
 
-        spread = (
-            max(
+        if bid is not None:
+            try:
+                bid_value = float(bid)
+            except (
+                TypeError,
+                ValueError,
+            ):
+                bid_value = None
+
+        if bid_value is not None:
+            spread = max(
                 0.0,
-                ask - bid,
+                ask - bid_value,
             )
-            if bid is not None
-            else 0.02
-        )
+        else:
+            spread = 0.02
 
         points = []
 
         for item in history or []:
-
             try:
                 timestamp = float(
                     item[0]
@@ -323,9 +281,7 @@ class ConvergenceStrategy:
                 0.0,
             )
 
-        def nearest(
-            seconds_ago
-        ):
+        def nearest(seconds_ago):
             return min(
                 points,
                 key=lambda x:
@@ -334,7 +290,8 @@ class ConvergenceStrategy:
                             now
                             - x[0]
                         )
-                        - seconds_ago
+                        -
+                        seconds_ago
                     ),
             )[1]
 
@@ -365,10 +322,6 @@ class ConvergenceStrategy:
             acceleration,
         )
 
-    # ============================================================
-    # SCORE
-    # ============================================================
-
     def _score(
         self,
         ask,
@@ -397,19 +350,22 @@ class ConvergenceStrategy:
                 ask
                 - 0.50
             )
-            / 0.50
+            /
+            0.50
         )
 
         time_score = self._clamp(
             (
                 elapsed
-                - self.start_sec
+                -
+                self.start_sec
             )
             /
             max(
                 1.0,
                 self.stop_sec
-                - self.start_sec,
+                -
+                self.start_sec,
             )
         )
 
@@ -419,9 +375,11 @@ class ConvergenceStrategy:
             max(
                 0.0,
                 spread
-                - 0.01,
+                -
+                0.01,
             )
-            / 0.05
+            /
+            0.05
         )
 
         depth_reference = max(
@@ -443,29 +401,19 @@ class ConvergenceStrategy:
         score = (
             0.30
             * momentum_score
-
             +
-
             0.18
             * acceleration_score
-
             +
-
             0.18
             * price_extremeness
-
             +
-
             0.14
             * time_score
-
             +
-
             0.12
             * depth_score
-
             +
-
             0.08
             * spread_score
         )
@@ -473,10 +421,6 @@ class ConvergenceStrategy:
         return self._clamp(
             score
         )
-
-    # ============================================================
-    # ENTRY RULES
-    # ============================================================
 
     def _allowed(
         self,
@@ -494,119 +438,79 @@ class ConvergenceStrategy:
         if spread > 0.05:
             return False
 
-        # ========================================================
-        # CHEAP
-        # ========================================================
+        # Global score floor.
+        if score < self.min_score:
+            return False
 
         if regime == "CHEAP":
-
             return (
                 score
                 >=
                 self.layer_a_min_score
-
                 and
-
                 momentum
                 >=
                 -0.0025
-
                 and
-
                 acceleration
                 >=
                 -0.0040
             )
 
-        # ========================================================
-        # MID
-        # ========================================================
-
         if regime == "MID":
-
             return (
                 score
                 >=
-                0.58
-
+                self.min_score
                 and
-
                 momentum
                 >=
                 -0.0015
-
                 and
-
                 acceleration
                 >=
                 -0.0020
             )
 
-        # ========================================================
-        # CORE
-        # ========================================================
-
         if regime == "CORE":
-
             return (
                 score
                 >=
-                0.58
-
+                self.min_score
                 and
-
                 momentum
                 >=
                 -0.0020
-
                 and
-
                 acceleration
                 >=
                 -0.0025
             )
 
-        # ========================================================
-        # HIGH
-        # ========================================================
-
         if regime == "HIGH":
-
             return (
                 score
                 >=
                 self.layer_b_min_score
-
                 and
-
                 momentum
                 >=
                 0.0020
-
                 and
-
                 acceleration
                 >=
                 0.0
-
                 and
-
                 spread
                 <=
                 0.035
-
                 and
-
                 elapsed
-                >=
-                90.0
+                <=
+                self.stop_sec
             )
 
         return False
-
-    # ============================================================
-    # POSITION SIZING
-    # ============================================================
 
     def _size(
         self,
@@ -622,26 +526,33 @@ class ConvergenceStrategy:
             score
         )
 
-        # ========================================================
-        # CHEAP
-        # ========================================================
-
         if regime == "CHEAP":
 
-            base = (
-                0.15
-                +
-                0.35
-                *
-                self._clamp(
+            progress = self._clamp(
+                (
                     price
-                    /
-                    0.30
+                    -
+                    self.layer_a_min_price
+                )
+                /
+                max(
+                    0.0001,
+                    self.layer_a_max_price
+                    -
+                    self.layer_a_min_price,
                 )
             )
 
             size = (
-                base
+                self.layer_a_base_notional
+                +
+                (
+                    self.layer_a_max_notional
+                    -
+                    self.layer_a_base_notional
+                )
+                *
+                progress
                 *
                 (
                     0.65
@@ -652,20 +563,18 @@ class ConvergenceStrategy:
             )
 
             return min(
-                1.00,
+                self.layer_a_max_notional,
+                self.max_order,
                 max(
-                    0.15,
+                    self.layer_a_base_notional,
                     size,
                 ),
             )
 
-        # ========================================================
-        # MID
-        # ========================================================
-
         if regime == "MID":
 
             return min(
+                self.max_order,
                 2.50,
                 max(
                     0.50,
@@ -676,13 +585,10 @@ class ConvergenceStrategy:
                 ),
             )
 
-        # ========================================================
-        # CORE
-        # ========================================================
-
         if regime == "CORE":
 
             return min(
+                self.max_order,
                 4.00,
                 max(
                     1.00,
@@ -693,62 +599,62 @@ class ConvergenceStrategy:
                 ),
             )
 
-        # ========================================================
-        # HIGH
-        # ========================================================
-
         if regime == "HIGH":
 
-            return min(
-                2.50,
+            strength = self._clamp(
+                (
+                    score
+                    -
+                    self.layer_b_min_score
+                )
+                /
                 max(
-                    0.50,
-                    0.50
-                    +
-                    2.00
-                    *
-                    max(
-                        0.0,
-                        score
-                        -
-                        0.82,
-                    )
-                    /
-                    0.18,
+                    0.0001,
+                    1.0
+                    -
+                    self.layer_b_min_score,
+                )
+            )
+
+            size = (
+                self.layer_b_base_notional
+                +
+                (
+                    self.layer_b_max_notional
+                    -
+                    self.layer_b_base_notional
+                )
+                *
+                strength
+            )
+
+            return min(
+                self.layer_b_max_notional,
+                self.max_order,
+                max(
+                    self.layer_b_base_notional,
+                    size,
                 ),
             )
 
         return 0.0
 
-    # ============================================================
-    # MAIN DECISION ENGINE
-    # ============================================================
-
     def decide(
         self,
-
         elapsed,
-
         up_ask,
         down_ask,
-
         up_bid,
         down_bid,
-
         up_history,
         down_history,
-
         current_exposure,
         available_cash,
-
         up_depth=0.0,
         down_depth=0.0,
-
         now=None,
-
         asset_exposure=0.0,
-    ) -> Optional[Signal]:
-
+    ):
         if now is None:
             now = time.time()
 
@@ -761,21 +667,13 @@ class ConvergenceStrategy:
         )
 
         # ========================================================
-        # HARD 60-SECOND CUTOFF
+        # HARD TRADING WINDOW
         # ========================================================
 
-        if (
-            elapsed
-            <
-            self.start_sec
-        ):
+        if elapsed < self.start_sec:
             return None
 
-        if (
-            elapsed
-            >=
-            self.stop_sec
-        ):
+        if elapsed >= self.stop_sec:
             return None
 
         # ========================================================
@@ -819,10 +717,8 @@ class ConvergenceStrategy:
             return None
 
         # ========================================================
-        # BUILD CANDIDATES
+        # CANDIDATES
         # ========================================================
-
-        candidates = []
 
         observations = (
             (
@@ -832,7 +728,6 @@ class ConvergenceStrategy:
                 up_depth,
                 up_history,
             ),
-
             (
                 "Down",
                 down_ask,
@@ -841,6 +736,8 @@ class ConvergenceStrategy:
                 down_history,
             ),
         )
+
+        candidates = []
 
         for (
             side,
@@ -906,19 +803,17 @@ class ConvergenceStrategy:
 
             ranking = score
 
-            # Give the trader-observed cheap layer a modest
-            # preference so HIGH prices do not dominate.
+            # The observed trader behavior is heavily concentrated
+            # in the cheap region. Give cheap opportunities a modest
+            # ranking preference rather than forcing them.
 
             if regime == "CHEAP":
-
                 ranking += 0.04
 
             elif regime == "MID":
-
                 ranking += 0.02
 
             elif regime == "HIGH":
-
                 ranking -= 0.10
 
             candidates.append(
@@ -935,15 +830,11 @@ class ConvergenceStrategy:
                 }
             )
 
-        # ========================================================
-        # NO SIGNAL
-        # ========================================================
-
         if not candidates:
             return None
 
         # ========================================================
-        # BEST SIGNAL
+        # BEST CANDIDATE
         # ========================================================
 
         best = max(
@@ -1011,10 +902,6 @@ class ConvergenceStrategy:
             f"seconds_left={seconds_left:.1f} "
             f"independent=true"
         )
-
-        # ========================================================
-        # SIGNAL
-        # ========================================================
 
         return Signal(
             side=best["side"],
