@@ -48,14 +48,14 @@ class ConvergenceStrategy:
     HIGH_MAX = 0.995
 
     HARD_MAX_ORDER = 10.0
-    HARD_MAX_MARKET_EXPOSURE = 25.0
+    HARD_MAX_MARKET_EXPOSURE = 100.0
     HARD_MAX_ASSET_EXPOSURE = 35.0
     HARD_CUTOFF_SECONDS = 60.0
 
     def __init__(
         self,
         bankroll=1000,
-        max_market_exposure=25,
+        max_market_exposure=100,
         max_order=10,
         layer_a_min_price=0.01,
         layer_a_max_price=0.30,
