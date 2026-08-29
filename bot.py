@@ -120,7 +120,7 @@ strategy = ConvergenceStrategy(
     max_market_exposure=float(
         os.getenv(
             "MAX_MARKET_EXPOSURE",
-            "25",
+            "100",
         )
     ),
 
