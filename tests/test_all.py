@@ -41,7 +41,7 @@ def test_valid_cheap_signal():
     assert signal is not None
     assert signal.side == "Up"
     assert signal.price == 0.20
-    assert "V2 regime=CHEAP" in signal.reason
+    assert "V3 regime=CHEAP" in signal.reason
     assert signal.notional >= 0.10
     assert signal.notional <= 1.00
 
@@ -451,7 +451,7 @@ def test_signal_reason_contains_v2_marker():
     )
 
     assert signal is not None
-    assert signal.reason.startswith("V2 ")
+    assert signal.reason.startswith("V3 ")
     assert "regime=CHEAP" in signal.reason
     assert "independent=true" in signal.reason
 
@@ -621,3 +621,16 @@ def test_positive_mid_confirmation_can_trade():
 def test_v22_order_cap_remains_hard():
     strategy = make_strategy(max_order=100)
     assert strategy.max_order == 10.0
+
+
+def test_v3_continuous_sizing_increases_with_price():
+    strategy = ConvergenceStrategy()
+    low = strategy._size("CHEAP", 0.05, 0.8)
+    high = strategy._size("CHEAP", 0.25, 0.8)
+    assert high > low
+    assert high <= strategy.max_order
+
+
+def test_v3_high_price_remains_conservatively_capped():
+    strategy = ConvergenceStrategy()
+    assert strategy._size("HIGH", 0.99, 1.0) <= 3.0
