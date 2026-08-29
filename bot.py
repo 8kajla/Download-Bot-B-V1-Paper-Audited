@@ -239,7 +239,7 @@ strategy = ConvergenceStrategy(
     max_total_exposure=float(
         os.getenv(
             "MAX_TOTAL_EXPOSURE",
-            "25",
+            "100",
         )
     ),
 )
@@ -364,32 +364,18 @@ def startup_data_check():
 
 def resolve_pending(now):
 
-    for condition, m in list(
-        pending.items()
-    ):
+    for condition, m in list(pending.items()):
 
-        if (
-            now
-            < float(m.get("end_ts", 0))
-            + 2
-        ):
+        if now < float(m.get("end_ts", 0)) + 2:
             continue
 
         try:
-
             token, outcome, status = resolve(m)
 
             if token:
+                closed = ledger.settle(condition, token)
 
-                closed = ledger.settle(
-                    condition,
-                    token,
-                )
-
-                pnl = sum(
-                    x[1]
-                    for x in closed
-                )
+                pnl = sum(float(x["pnl"]) for x in closed)
 
                 research.record_resolution(
                     ts=now,
@@ -398,6 +384,15 @@ def resolve_pending(now):
                     winner_token=token,
                     closed=closed,
                 )
+
+                # Human-readable settlement lines. Detailed resolution
+                # information remains in the research files.
+                for item in closed:
+                    p(
+                        f'   Settlement: '
+                        f'${item["settlement_per_share"]:.2f}/share | '
+                        f'P&L: ${item["pnl"]:+.4f}'
+                    )
 
                 p(
                     f'RESOLUTION | '
@@ -408,29 +403,16 @@ def resolve_pending(now):
                     f'closed={len(closed)}'
                 )
 
-                pending.pop(
-                    condition,
-                    None,
-                )
-
-                markets.pop(
-                    condition,
-                    None,
-                )
-
-                histories.pop(
-                    condition,
-                    None,
-                )
+                pending.pop(condition, None)
+                markets.pop(condition, None)
+                histories.pop(condition, None)
 
             elif status == "CLOSED_UNRESOLVED":
-
                 research.record_resolution_error(
                     ts=now,
                     market=m,
                     status=status,
                 )
-
                 p(
                     f'CLOSED_UNRESOLVED | '
                     f'asset={m["asset"]} | '
@@ -438,19 +420,16 @@ def resolve_pending(now):
                 )
 
         except Exception as e:
-
             research.record_resolution_error(
                 ts=now,
                 market=m,
                 status=f"ERROR:{type(e).__name__}",
             )
-
             p(
                 f'RESOLUTION ERROR | '
                 f'{m["slug"]} | '
                 f'{type(e).__name__}: {e}'
             )
-
 
 def report(books):
 
@@ -464,29 +443,20 @@ def report(books):
     last_report = now
 
     m = ledger.mark(books)
+    m["positions"] = len(ledger.positions)
 
-    m["positions"] = len(
-        ledger.positions
-    )
+    research.record_pnl(now, m)
 
-    research.record_pnl(
-        now,
-        m,
-    )
-
+    # Keep the console intentionally compact. Full diagnostics remain in
+    # trades/decisions/orderbooks/pnl research files.
     p(
-        f'MINUTE P&L | '
-        f'equity=${m["equity"]:.2f} | '
-        f'total={m["pnl"]:+.2f} | '
-        f'realized={m["realized"]:+.2f} | '
-        f'unrealized={m["unrealized"]:+.2f} | '
-        f'cash=${m["cash"]:.2f} | '
-        f'open_cost=${m["open_cost"]:.2f} | '
-        f'DD={m["drawdown"]:+.2f} | '
-        f'positions={len(ledger.positions)} | '
-        f'marked={m["marked"]}'
+        f'P&L   ours ${m["pnl"]:+.2f} | '
+        f'realized ${m["realized"]:+.2f} | '
+        f'unrealized ${m["unrealized"]:+.2f} | '
+        f'cash ${m["cash"]:.2f} | '
+        f'open ${m["open_cost"]:.2f} | '
+        f'positions {m["positions"]}'
     )
-
 
 def main():
 
