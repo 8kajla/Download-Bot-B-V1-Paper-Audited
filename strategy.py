@@ -16,23 +16,20 @@ class ConvergenceStrategy:
     """
     BOT B V2
 
-    Independent paper-trading strategy based on the observable behavioral
-    characteristics found in the trader dataset.
+    Independent paper-trading strategy based on the observable behavior
+    found in the trader dataset.
 
-    IMPORTANT:
-    This is NOT a copy-trading strategy. It does not read or follow the
-    trader's individual orders.
-
-    V2 price regimes:
+    Price regimes:
 
         CHEAP : 0.01 <= price < 0.30
         MID   : 0.30 <= price < 0.70
         CORE  : 0.70 <= price < 0.90
         HIGH  : 0.90 <= price < 0.995
 
-    The trader's actual private entry trigger is unknown, so the signal
-    calculation is an independently inferred market-microstructure
-    hypothesis.
+    IMPORTANT:
+    The trader's private entry trigger is not observable in the dataset.
+    Therefore the signal logic below is an inferred hypothesis, not a
+    guaranteed reconstruction of the trader's strategy.
 
     Hard rule:
 
@@ -40,7 +37,7 @@ class ConvergenceStrategy:
     """
 
     # ============================================================
-    # V2 PRICE REGIMES
+    # PRICE REGIMES
     # ============================================================
 
     CHEAP_MIN = 0.01
@@ -62,7 +59,6 @@ class ConvergenceStrategy:
     def __init__(
         self,
         bankroll=1000,
-
         max_market_exposure=25,
         max_order=10,
 
@@ -92,12 +88,9 @@ class ConvergenceStrategy:
     ):
         self.bankroll = float(bankroll)
 
-        # --------------------------------------------------------
+        # ========================================================
         # HARD V2 RISK CAPS
-        # --------------------------------------------------------
-
-        # Even if the environment contains the old V1 values of 50,
-        # V2 will never allow these limits to exceed the V2 caps.
+        # ========================================================
 
         self.max_market_exposure = min(
             float(max_market_exposure),
@@ -114,21 +107,19 @@ class ConvergenceStrategy:
             10.0,
         )
 
-        # --------------------------------------------------------
-        # V2 REGIME BOUNDARIES
-        # --------------------------------------------------------
+        # ========================================================
+        # PRICE REGIMES
+        # ========================================================
 
-        # CHEAP regime
         self.layer_a_min_price = self.CHEAP_MIN
         self.layer_a_max_price = self.CHEAP_MAX
 
-        # HIGH regime
         self.layer_b_min_price = self.HIGH_MIN
         self.layer_b_max_price = self.HIGH_MAX
 
-        # --------------------------------------------------------
-        # CHEAP SIZING
-        # --------------------------------------------------------
+        # ========================================================
+        # CHEAP REGIME SIZING
+        # ========================================================
 
         self.layer_a_base_notional = max(
             0.10,
@@ -140,9 +131,9 @@ class ConvergenceStrategy:
             float(layer_a_max_notional),
         )
 
-        # --------------------------------------------------------
-        # HIGH SIZING
-        # --------------------------------------------------------
+        # ========================================================
+        # HIGH REGIME SIZING
+        # ========================================================
 
         self.layer_b_base_notional = min(
             2.00,
@@ -154,9 +145,9 @@ class ConvergenceStrategy:
             float(layer_b_max_notional),
         )
 
-        # --------------------------------------------------------
+        # ========================================================
         # TIMING
-        # --------------------------------------------------------
+        # ========================================================
 
         self.start_sec = float(
             start_sec
@@ -166,9 +157,9 @@ class ConvergenceStrategy:
             stop_sec
         )
 
-        # --------------------------------------------------------
+        # ========================================================
         # SIGNAL THRESHOLDS
-        # --------------------------------------------------------
+        # ========================================================
 
         self.min_score = float(
             min_score
@@ -178,20 +169,15 @@ class ConvergenceStrategy:
             layer_a_min_score
         )
 
-        # HIGH regime is deliberately much stricter than V1.
-        #
-        # V1 repeatedly bought 90-100c favorites and lost money.
-        # Therefore a HIGH trade requires >= 0.82 score regardless
-        # of a lower environment setting.
-
+        # HIGH regime must be very selective.
         self.layer_b_min_score = max(
             0.82,
             float(layer_b_min_score),
         )
 
-        # --------------------------------------------------------
+        # ========================================================
         # ORDER BOOK LIMIT
-        # --------------------------------------------------------
+        # ========================================================
 
         self.max_depth_participation = min(
             0.25,
@@ -202,7 +188,7 @@ class ConvergenceStrategy:
         )
 
     # ============================================================
-    # BASIC HELPERS
+    # HELPERS
     # ============================================================
 
     @staticmethod
@@ -225,10 +211,6 @@ class ConvergenceStrategy:
 
     @staticmethod
     def _regime(price):
-        """
-        Determine which V2 price regime a contract belongs to.
-        """
-
         price = float(price)
 
         if (
@@ -272,16 +254,6 @@ class ConvergenceStrategy:
         history,
         now,
     ):
-        """
-        Extract observable short-term market features.
-
-        Returns:
-
-            spread
-            momentum
-            acceleration
-        """
-
         if ask is None:
             return None
 
@@ -344,7 +316,6 @@ class ConvergenceStrategy:
 
         points.sort()
 
-        # No historical observations yet.
         if not points:
             return (
                 spread,
@@ -367,29 +338,19 @@ class ConvergenceStrategy:
                     ),
             )[1]
 
-        # --------------------------------------------------------
-        # 30 SECOND MOMENTUM
-        # --------------------------------------------------------
-
         p30 = nearest(
             30.0
         )
-
-        # --------------------------------------------------------
-        # 10 SECOND PRICE
-        # --------------------------------------------------------
 
         p10 = nearest(
             10.0
         )
 
-        # Positive = current ask is higher than historical ask.
         momentum = (
             ask
             - p30
         )
 
-        # Measures whether recent movement is accelerating.
         acceleration = (
             ask
             - p10
@@ -405,7 +366,7 @@ class ConvergenceStrategy:
         )
 
     # ============================================================
-    # V2 SCORE
+    # SCORE
     # ============================================================
 
     def _score(
@@ -417,26 +378,12 @@ class ConvergenceStrategy:
         acceleration,
         elapsed,
     ):
-        """
-        Calculate the V2 observable-market ranking score.
-
-        This is NOT a probability of winning.
-        """
-
-        # --------------------------------------------------------
-        # MOMENTUM
-        # --------------------------------------------------------
-
         momentum_score = self._clamp(
             0.5
             +
             momentum
             * 8.0
         )
-
-        # --------------------------------------------------------
-        # ACCELERATION
-        # --------------------------------------------------------
 
         acceleration_score = self._clamp(
             0.5
@@ -445,10 +392,6 @@ class ConvergenceStrategy:
             * 10.0
         )
 
-        # --------------------------------------------------------
-        # PRICE EXTREMENESS
-        # --------------------------------------------------------
-
         price_extremeness = self._clamp(
             abs(
                 ask
@@ -456,10 +399,6 @@ class ConvergenceStrategy:
             )
             / 0.50
         )
-
-        # --------------------------------------------------------
-        # TIME
-        # --------------------------------------------------------
 
         time_score = self._clamp(
             (
@@ -474,10 +413,6 @@ class ConvergenceStrategy:
             )
         )
 
-        # --------------------------------------------------------
-        # SPREAD
-        # --------------------------------------------------------
-
         spread_score = self._clamp(
             1.0
             -
@@ -488,10 +423,6 @@ class ConvergenceStrategy:
             )
             / 0.05
         )
-
-        # --------------------------------------------------------
-        # DEPTH
-        # --------------------------------------------------------
 
         depth_reference = max(
             1.0,
@@ -508,10 +439,6 @@ class ConvergenceStrategy:
             /
             depth_reference
         )
-
-        # --------------------------------------------------------
-        # FINAL SCORE
-        # --------------------------------------------------------
 
         score = (
             0.30
@@ -548,7 +475,7 @@ class ConvergenceStrategy:
         )
 
     # ============================================================
-    # REGIME ENTRY RULES
+    # ENTRY RULES
     # ============================================================
 
     def _allowed(
@@ -561,20 +488,15 @@ class ConvergenceStrategy:
         depth,
         elapsed,
     ):
-        """
-        Determine whether a candidate is eligible for entry.
-        """
-
-        # Basic market-quality filter.
         if depth <= 0:
             return False
 
         if spread > 0.05:
             return False
 
-        # --------------------------------------------------------
+        # ========================================================
         # CHEAP
-        # --------------------------------------------------------
+        # ========================================================
 
         if regime == "CHEAP":
 
@@ -596,9 +518,9 @@ class ConvergenceStrategy:
                 -0.0040
             )
 
-        # --------------------------------------------------------
+        # ========================================================
         # MID
-        # --------------------------------------------------------
+        # ========================================================
 
         if regime == "MID":
 
@@ -620,9 +542,9 @@ class ConvergenceStrategy:
                 -0.0020
             )
 
-        # --------------------------------------------------------
+        # ========================================================
         # CORE
-        # --------------------------------------------------------
+        # ========================================================
 
         if regime == "CORE":
 
@@ -644,9 +566,9 @@ class ConvergenceStrategy:
                 -0.0025
             )
 
-        # --------------------------------------------------------
+        # ========================================================
         # HIGH
-        # --------------------------------------------------------
+        # ========================================================
 
         if regime == "HIGH":
 
@@ -692,17 +614,6 @@ class ConvergenceStrategy:
         price,
         score,
     ):
-        """
-        V2 sizing function.
-
-        Cheap contracts receive small positions.
-
-        Position size increases through the middle/core regimes.
-
-        HIGH-price contracts are deliberately capped because the
-        previous V1 90-100c behavior generated disproportionate losses.
-        """
-
         price = self._clamp(
             price
         )
@@ -711,18 +622,11 @@ class ConvergenceStrategy:
             score
         )
 
-        # --------------------------------------------------------
+        # ========================================================
         # CHEAP
-        # --------------------------------------------------------
+        # ========================================================
 
         if regime == "CHEAP":
-
-            # Cheap prices get small notional.
-            #
-            # Typical range:
-            # approximately $0.15-$0.50.
-            #
-            # Stronger conviction can increase the size modestly.
 
             base = (
                 0.15
@@ -755,9 +659,9 @@ class ConvergenceStrategy:
                 ),
             )
 
-        # --------------------------------------------------------
+        # ========================================================
         # MID
-        # --------------------------------------------------------
+        # ========================================================
 
         if regime == "MID":
 
@@ -772,9 +676,9 @@ class ConvergenceStrategy:
                 ),
             )
 
-        # --------------------------------------------------------
+        # ========================================================
         # CORE
-        # --------------------------------------------------------
+        # ========================================================
 
         if regime == "CORE":
 
@@ -789,13 +693,12 @@ class ConvergenceStrategy:
                 ),
             )
 
-        # --------------------------------------------------------
+        # ========================================================
         # HIGH
-        # --------------------------------------------------------
+        # ========================================================
 
         if regime == "HIGH":
 
-            # Never restore V1's flat $5-$10 behavior.
             return min(
                 2.50,
                 max(
@@ -823,6 +726,7 @@ class ConvergenceStrategy:
 
     def decide(
         self,
+
         elapsed,
 
         up_ask,
@@ -843,10 +747,7 @@ class ConvergenceStrategy:
         now=None,
 
         asset_exposure=0.0,
-    ):
-        """
-        Produce a paper-trade Signal or None.
-        """
+    ) -> Optional[Signal]:
 
         if now is None:
             now = time.time()
@@ -860,11 +761,8 @@ class ConvergenceStrategy:
         )
 
         # ========================================================
-        # HARD TIMING GATE
+        # HARD 60-SECOND CUTOFF
         # ========================================================
-
-        # STOP_TRADING_SECOND=240 on a 300-second market means
-        # the final 60 seconds are completely blocked.
 
         if (
             elapsed
@@ -881,7 +779,7 @@ class ConvergenceStrategy:
             return None
 
         # ========================================================
-        # RISK INPUTS
+        # EXPOSURE
         # ========================================================
 
         current_exposure = max(
@@ -905,10 +803,6 @@ class ConvergenceStrategy:
             ),
         )
 
-        # ========================================================
-        # REMAINING RISK
-        # ========================================================
-
         remaining = min(
             self.max_market_exposure
             -
@@ -925,7 +819,7 @@ class ConvergenceStrategy:
             return None
 
         # ========================================================
-        # CANDIDATES
+        # BUILD CANDIDATES
         # ========================================================
 
         candidates = []
@@ -983,20 +877,12 @@ class ConvergenceStrategy:
                 ),
             )
 
-            # ====================================================
-            # REGIME
-            # ====================================================
-
             regime = self._regime(
                 ask
             )
 
             if regime is None:
                 continue
-
-            # ====================================================
-            # SCORE
-            # ====================================================
 
             score = self._score(
                 ask,
@@ -1006,10 +892,6 @@ class ConvergenceStrategy:
                 acceleration,
                 elapsed,
             )
-
-            # ====================================================
-            # ENTRY FILTER
-            # ====================================================
 
             if not self._allowed(
                 regime,
@@ -1022,15 +904,10 @@ class ConvergenceStrategy:
             ):
                 continue
 
-            # ====================================================
-            # RANKING
-            # ====================================================
-
             ranking = score
 
-            # Cheap trades are intentionally given a modest
-            # ranking preference so HIGH-price trades do not
-            # automatically dominate the candidate list.
+            # Give the trader-observed cheap layer a modest
+            # preference so HIGH prices do not dominate.
 
             if regime == "CHEAP":
 
@@ -1059,14 +936,14 @@ class ConvergenceStrategy:
             )
 
         # ========================================================
-        # NO VALID CANDIDATE
+        # NO SIGNAL
         # ========================================================
 
         if not candidates:
             return None
 
         # ========================================================
-        # BEST CANDIDATE
+        # BEST SIGNAL
         # ========================================================
 
         best = max(
@@ -1076,7 +953,7 @@ class ConvergenceStrategy:
         )
 
         # ========================================================
-        # SIZE
+        # POSITION SIZE
         # ========================================================
 
         size = self._size(
@@ -1085,7 +962,6 @@ class ConvergenceStrategy:
             best["score"],
         )
 
-        # Global caps.
         size = min(
             size,
             self.max_order,
@@ -1093,7 +969,7 @@ class ConvergenceStrategy:
         )
 
         # ========================================================
-        # ORDER BOOK DEPTH CAP
+        # DEPTH PARTICIPATION CAP
         # ========================================================
 
         depth_cap = (
@@ -1109,15 +985,11 @@ class ConvergenceStrategy:
             depth_cap,
         )
 
-        # ========================================================
-        # MINIMUM SIGNAL SIZE
-        # ========================================================
-
         if size < 0.10:
             return None
 
         # ========================================================
-        # RESEARCH REASON
+        # REASON
         # ========================================================
 
         seconds_left = max(
