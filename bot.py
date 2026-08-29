@@ -430,6 +430,11 @@ def resolve_pending(now):
                 f'{m["slug"]} | '
                 f'{type(e).__name__}: {e}'
             )
+            log.error(
+                "RESOLUTION TRACE | %s",
+                m["slug"],
+                exc_info=True,
+            )
 
 def report(books):
 
