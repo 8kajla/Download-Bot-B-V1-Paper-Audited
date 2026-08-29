@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import math
 import time
 
 
@@ -12,45 +13,46 @@ class Signal:
 
 
 class ConvergenceStrategy:
-    """
-    BOT B V3.0
+    """BOT B V3.1 behavioral-replica strategy.
 
-    Paper-only behavioral proxy for the trader dataset.
+    The sizing model is based on the observed reference-trader relationship
+    between execution price and order notional. It is deliberately scaled to
+    the current $1,000 / $100 research account and remains BUY-only.
 
-    V2.2 keeps the original cheap/high structure, but makes risk and
-    entry gating explicit:
-
-      - CHEAP: 0.01 <= price < 0.30
-      - MID:   0.30 <= price < 0.70
-      - CORE:  0.70 <= price < 0.90
-      - HIGH:  0.90 <= price < 0.995
-
-    Safety caps are hard-capped in code:
-      - $10 maximum order
-      - $25 maximum exposure per market
-      - $35 maximum exposure per underlying asset
-      - global portfolio exposure is supplied as total_exposure
-      - no new entries during the final 60 seconds
-
-    This is an inferred strategy, not a guaranteed reconstruction of any
-    private trader's trigger.
+    This is an inferred behavioral proxy; the reference trader's private
+    pre-trade trigger is not observable in the execution-only dataset.
     """
 
-    VERSION = "V3.0"
+    VERSION = "V3.1"
 
-    CHEAP_MIN = 0.01
-    CHEAP_MAX = 0.30
-    MID_MIN = 0.30
-    MID_MAX = 0.70
-    CORE_MIN = 0.70
-    CORE_MAX = 0.90
-    HIGH_MIN = 0.90
-    HIGH_MAX = 0.995
+    CHEAP_MIN, CHEAP_MAX = 0.01, 0.30
+    MID_MIN, MID_MAX = 0.30, 0.70
+    CORE_MIN, CORE_MAX = 0.70, 0.90
+    HIGH_MIN, HIGH_MAX = 0.90, 0.995
 
     HARD_MAX_ORDER = 10.0
     HARD_MAX_MARKET_EXPOSURE = 100.0
     HARD_MAX_ASSET_EXPOSURE = 35.0
+    HARD_MAX_TOTAL_EXPOSURE = 100.0
     HARD_CUTOFF_SECONDS = 60.0
+
+    # Reference empirical average order sizes by price bucket. These are
+    # scaled to the research account, not used as literal live-money sizes.
+    PRICE_ANCHORS = (
+        (0.01, 0.47),
+        (0.10, 0.47),
+        (0.20, 0.75),
+        (0.30, 1.07),
+        (0.40, 1.48),
+        (0.50, 2.17),
+        (0.60, 3.08),
+        (0.70, 3.93),
+        (0.80, 5.25),
+        (0.90, 8.28),
+        (0.95, 30.78),
+        (0.995, 30.78),
+    )
+    REFERENCE_SCALE = HARD_MAX_ORDER / 30.78
 
     def __init__(
         self,
@@ -68,7 +70,7 @@ class ConvergenceStrategy:
         start_sec=0,
         stop_sec=240,
         min_score=0.50,
-        layer_a_min_score=0.50,
+        layer_a_min_score=0.45,
         layer_b_min_score=0.82,
         max_depth_participation=0.25,
         max_asset_exposure=35,
@@ -76,65 +78,39 @@ class ConvergenceStrategy:
         hard_cutoff_seconds=60,
     ):
         self.bankroll = float(bankroll)
-
-        self.max_market_exposure = min(
-            max(0.0, float(max_market_exposure)),
-            self.HARD_MAX_MARKET_EXPOSURE,
-        )
-        self.max_asset_exposure = min(
-            max(0.0, float(max_asset_exposure)),
-            self.HARD_MAX_ASSET_EXPOSURE,
-        )
-        self.max_total_exposure = min(
-            max(0.0, float(max_total_exposure)),
-            self.HARD_MAX_MARKET_EXPOSURE,
-        )
-        self.max_order = min(
-            max(0.0, float(max_order)),
-            self.HARD_MAX_ORDER,
-        )
+        self.max_market_exposure = min(max(0.0, float(max_market_exposure)), self.HARD_MAX_MARKET_EXPOSURE)
+        self.max_asset_exposure = min(max(0.0, float(max_asset_exposure)), self.HARD_MAX_ASSET_EXPOSURE)
+        self.max_total_exposure = min(max(0.0, float(max_total_exposure)), self.HARD_MAX_TOTAL_EXPOSURE)
+        self.max_order = min(max(0.0, float(max_order)), self.HARD_MAX_ORDER)
 
         self.layer_a_min_price = float(layer_a_min_price)
         self.layer_a_max_price = float(layer_a_max_price)
         self.layer_b_min_price = float(layer_b_min_price)
         self.layer_b_max_price = float(layer_b_max_price)
-
         self.layer_a_base_notional = max(0.10, float(layer_a_base_notional))
-        self.layer_a_max_notional = min(
-            self.max_order, float(layer_a_max_notional)
-        )
-        self.layer_b_base_notional = min(
-            self.max_order, float(layer_b_base_notional)
-        )
-        self.layer_b_max_notional = min(
-            self.max_order, float(layer_b_max_notional)
-        )
+        self.layer_a_max_notional = min(self.max_order, float(layer_a_max_notional))
+        self.layer_b_base_notional = min(self.max_order, float(layer_b_base_notional))
+        self.layer_b_max_notional = min(self.max_order, float(layer_b_max_notional))
 
         self.start_sec = float(start_sec)
         self.stop_sec = float(stop_sec)
         self.min_score = float(min_score)
-        self.layer_a_min_score = max(0.50, float(layer_a_min_score))
-        self.layer_b_min_score = max(0.82, float(layer_b_min_score))
-
-        self.max_depth_participation = min(
-            0.25, max(0.01, float(max_depth_participation))
-        )
-        self.hard_cutoff_seconds = max(
-            self.HARD_CUTOFF_SECONDS,
-            float(hard_cutoff_seconds),
-        )
+        self.layer_a_min_score = max(0.0, float(layer_a_min_score))
+        self.layer_b_min_score = max(0.0, float(layer_b_min_score))
+        self.max_depth_participation = min(0.25, max(0.01, float(max_depth_participation)))
+        self.hard_cutoff_seconds = max(self.HARD_CUTOFF_SECONDS, float(hard_cutoff_seconds))
 
     @staticmethod
     def _clamp(value, low=0.0, high=1.0):
         return max(low, min(high, float(value)))
 
     def _regime(self, price):
-        price = float(price)
-        if self.layer_a_min_price <= price < self.layer_a_max_price:
+        p = float(price)
+        if self.layer_a_min_price <= p < self.layer_a_max_price:
             return "CHEAP"
-        if self.layer_a_max_price <= price < self.layer_b_min_price:
-            return "MID" if price < 0.70 else "CORE"
-        if self.layer_b_min_price <= price < self.layer_b_max_price:
+        if self.layer_a_max_price <= p < self.layer_b_min_price:
+            return "MID" if p < 0.70 else "CORE"
+        if self.layer_b_min_price <= p < self.layer_b_max_price:
             return "HIGH"
         return None
 
@@ -153,32 +129,22 @@ class ConvergenceStrategy:
             bid_value = None if bid is None else float(bid)
         except (TypeError, ValueError):
             bid_value = None
-
-        spread = (
-            max(0.0, ask - bid_value)
-            if bid_value is not None
-            else 0.02
-        )
+        spread = max(0.0, ask - bid_value) if bid_value is not None else 0.02
 
         points = []
         for item in history or []:
             try:
-                timestamp = float(item[0])
-                price = float(item[1])
+                ts, price = float(item[0]), float(item[1])
                 if 0.0 < price < 1.0:
-                    points.append((timestamp, price))
+                    points.append((ts, price))
             except (TypeError, ValueError, IndexError):
                 continue
-
         points.sort()
         if not points:
             return spread, 0.0, 0.0
 
         def nearest(seconds_ago):
-            return min(
-                points,
-                key=lambda x: abs((now - x[0]) - seconds_ago),
-            )[1]
+            return min(points, key=lambda x: abs((now - x[0]) - seconds_ago))[1]
 
         p30 = nearest(30.0)
         p10 = nearest(10.0)
@@ -186,28 +152,14 @@ class ConvergenceStrategy:
         acceleration = (ask - p10) - (p10 - p30)
         return spread, momentum, acceleration
 
-    def _score(
-        self,
-        ask,
-        depth,
-        spread,
-        momentum,
-        acceleration,
-        elapsed,
-    ):
+    def _score(self, ask, depth, spread, momentum, acceleration, elapsed):
         momentum_score = self._clamp(0.5 + momentum * 8.0)
         acceleration_score = self._clamp(0.5 + acceleration * 10.0)
         price_extremeness = self._clamp(abs(ask - 0.50) / 0.50)
-        time_score = self._clamp(
-            (elapsed - self.start_sec)
-            / max(1.0, self.stop_sec - self.start_sec)
-        )
-        spread_score = self._clamp(
-            1.0 - max(0.0, spread - 0.01) / 0.05
-        )
+        time_score = self._clamp((elapsed - self.start_sec) / max(1.0, self.stop_sec - self.start_sec))
+        spread_score = self._clamp(1.0 - max(0.0, spread - 0.01) / 0.05)
         depth_reference = max(1.0, self.max_order / max(ask, 0.01))
         depth_score = self._clamp(float(depth) / depth_reference)
-
         score = (
             0.30 * momentum_score
             + 0.18 * acceleration_score
@@ -218,122 +170,60 @@ class ConvergenceStrategy:
         )
         return self._clamp(score)
 
-    def _allowed(
-        self,
-        regime,
-        score,
-        momentum,
-        acceleration,
-        spread,
-        depth,
-        elapsed,
-    ):
-        if depth <= 0 or spread > 0.05:
+    def _allowed(self, regime, score, momentum, acceleration, spread, depth, elapsed):
+        if depth <= 0 or spread > 0.05 or score < self.min_score:
             return False
-        if score < self.min_score:
-            return False
-
-        # Cheap remains the primary small-size hunting zone, but flat/
-        # deteriorating markets are rejected instead of being accepted
-        # merely because price is low.
         if regime == "CHEAP":
-            return (
-                score >= self.layer_a_min_score
-                and momentum >= -0.0010
-                and acceleration >= -0.0015
-            )
-
-        # Middle prices require actual positive confirmation. This removes
-        # the old behavior where a nearly flat MID/CORE setup could pass.
+            return score >= self.layer_a_min_score and momentum >= -0.0010 and acceleration >= -0.0015
         if regime == "MID":
-            return (
-                score >= max(self.min_score, 0.62)
-                and momentum >= 0.0010
-                and acceleration >= -0.0005
-                and spread <= 0.04
-            )
-
+            return score >= max(self.min_score, 0.55) and momentum >= 0.0010 and acceleration >= -0.0005 and spread <= 0.04
         if regime == "CORE":
-            return (
-                score >= max(self.min_score, 0.66)
-                and momentum >= 0.0015
-                and acceleration >= 0.0
-                and spread <= 0.04
-            )
-
+            return score >= max(self.min_score, 0.58) and momentum >= 0.0015 and acceleration >= 0.0 and spread <= 0.04
         if regime == "HIGH":
-            return (
-                score >= self.layer_b_min_score
-                and momentum >= 0.0020
-                and acceleration >= 0.0
-                and spread <= 0.035
-                and elapsed < self.stop_sec
-            )
-
+            return score >= self.layer_b_min_score and momentum >= 0.0020 and acceleration >= 0.0 and spread <= 0.035 and elapsed < self.stop_sec
         return False
 
+    @classmethod
+    def _reference_size(cls, price):
+        """Interpolate the empirical average order-size curve in log-space."""
+        p = max(cls.PRICE_ANCHORS[0][0], min(cls.PRICE_ANCHORS[-1][0], float(price)))
+        anchors = cls.PRICE_ANCHORS
+        if p <= anchors[0][0]:
+            raw = anchors[0][1]
+        elif p >= anchors[-1][0]:
+            raw = anchors[-1][1]
+        else:
+            raw = anchors[0][1]
+            for (p0, s0), (p1, s1) in zip(anchors, anchors[1:]):
+                if p0 <= p <= p1:
+                    if p1 == p0:
+                        raw = s1
+                    else:
+                        w = (p - p0) / (p1 - p0)
+                        raw = math.exp(math.log(s0) + w * (math.log(s1) - math.log(s0)))
+                    break
+        return raw * cls.REFERENCE_SCALE
+
     def _size(self, regime, price, score):
-        """
-        V3 continuous sizing proxy.
-
-        The reference data shows notional rising smoothly and strongly with
-        entry price. We therefore avoid a single flat order size while still
-        preserving conservative experimental caps by regime.
-
-        These are replica constraints, not claims about the private trader's
-        exact sizing formula.
-        """
-        price = self._clamp(price, 0.0, 0.999)
+        """Continuous empirical price-to-size curve, scaled to this account."""
+        p = max(0.01, min(0.995, float(price)))
         score = self._clamp(score)
+        base = self._reference_size(p)
 
-        # Smooth/geometric price effect: low prices stay small while higher
-        # prices receive larger base allocations.
-        # Normalize price on a log-odds-like curve, then blend in signal
-        # strength. This is intentionally continuous rather than tiered.
-        p = max(0.01, min(0.995, price))
-        price_factor = self._clamp(
-            (p ** 1.55) / (0.995 ** 1.55),
-            0.0,
-            1.0,
-        )
-        strength = 0.70 + 0.30 * score
+        # Keep the observed price relationship dominant. Signal strength is a
+        # modest multiplier rather than a separate tiered sizing system.
+        signal_multiplier = 0.85 + 0.30 * score
+        size = base * signal_multiplier
 
+        # Preserve the existing small-trade floor for paper execution and the
+        # configurable cheap/high compatibility limits only where they are
+        # safety-oriented. The empirical curve remains the primary driver.
         if regime == "CHEAP":
-            floor = max(0.10, self.layer_a_base_notional)
-            cap = min(self.max_order, self.layer_a_max_notional)
-        elif regime == "MID":
-            floor = 0.25
-            cap = min(self.max_order, 2.50)
-        elif regime == "CORE":
-            floor = 0.50
-            cap = min(self.max_order, 4.00)
-        elif regime == "HIGH":
-            # High-price trades are real in the reference data, but the
-            # previous V1 late-convergence sizing was a measured loss driver.
-            # Keep this region active but deliberately capped.
-            floor = min(self.max_order, 1.50)
-            cap = min(self.max_order, 3.00)
+            size = max(0.10, size)
         else:
-            return 0.0
+            size = max(0.10, size)
 
-        # Map each regime continuously across its own price range so there
-        # are no abrupt sizing jumps at 0.30/0.70/0.90.
-        if regime == "CHEAP":
-            lo, hi = self.CHEAP_MIN, self.CHEAP_MAX
-        elif regime == "MID":
-            lo, hi = self.MID_MIN, self.MID_MAX
-        elif regime == "CORE":
-            lo, hi = self.CORE_MIN, self.CORE_MAX
-        else:
-            lo, hi = self.HIGH_MIN, self.HIGH_MAX
-
-        local = self._clamp((p - lo) / max(0.0001, hi - lo))
-        # Smooth within-regime curve, with a stronger price effect than the
-        # score effect, matching the observed monotonic price/size finding.
-        curved = local ** 1.35
-        size = floor + (cap - floor) * curved * strength
-
-        return min(cap, self.max_order, max(floor, size))
+        return min(self.max_order, size)
 
     def decide(
         self,
@@ -354,7 +244,6 @@ class ConvergenceStrategy:
     ):
         if now is None:
             now = time.time()
-
         now = float(now)
         elapsed = float(elapsed)
         current_exposure = max(0.0, float(current_exposure))
@@ -364,11 +253,8 @@ class ConvergenceStrategy:
 
         if elapsed < self.start_sec or elapsed >= self.stop_sec:
             return None
-
-        # The final-minute rule is independent of stop_sec. If stop_sec is
-        # ever configured incorrectly, this still prevents late entries.
-        market_seconds_left = max(0.0, 300.0 - elapsed)
-        if market_seconds_left <= self.hard_cutoff_seconds:
+        seconds_left = max(0.0, 300.0 - elapsed)
+        if seconds_left <= self.hard_cutoff_seconds:
             return None
 
         remaining = min(
@@ -381,103 +267,65 @@ class ConvergenceStrategy:
         if remaining < 0.10:
             return None
 
-        observations = (
+        candidates = []
+        for side, ask, bid, depth, history in (
             ("Up", up_ask, up_bid, up_depth, up_history),
             ("Down", down_ask, down_bid, down_depth, down_history),
-        )
-
-        candidates = []
-        for side, ask, bid, depth, history in observations:
+        ):
             features = self._features(ask, bid, history, now)
             if features is None:
                 continue
-
             spread, momentum, acceleration = features
             ask = float(ask)
             depth = max(0.0, float(depth))
             regime = self._regime(ask)
             if regime is None:
                 continue
-
-            score = self._score(
-                ask,
-                depth,
-                spread,
-                momentum,
-                acceleration,
-                elapsed,
-            )
-            if not self._allowed(
-                regime,
-                score,
-                momentum,
-                acceleration,
-                spread,
-                depth,
-                elapsed,
-            ):
+            score = self._score(ask, depth, spread, momentum, acceleration, elapsed)
+            if not self._allowed(regime, score, momentum, acceleration, spread, depth, elapsed):
                 continue
 
             ranking = score
+            # Cheap executions are more frequent in the reference data; this
+            # is only a small ranking preference, not a size multiplier.
             if regime == "CHEAP":
-                ranking += 0.06
-            elif regime == "MID":
-                ranking -= 0.02
-            elif regime == "CORE":
-                ranking -= 0.04
+                ranking += 0.04
             elif regime == "HIGH":
-                ranking -= 0.10
+                ranking -= 0.02
 
-            candidates.append(
-                {
-                    "side": side,
-                    "ask": ask,
-                    "depth": depth,
-                    "regime": regime,
-                    "score": score,
-                    "ranking": ranking,
-                    "momentum": momentum,
-                    "acceleration": acceleration,
-                    "spread": spread,
-                }
-            )
+            candidates.append({
+                "side": side,
+                "ask": ask,
+                "depth": depth,
+                "regime": regime,
+                "score": score,
+                "ranking": ranking,
+                "momentum": momentum,
+                "acceleration": acceleration,
+                "spread": spread,
+            })
 
         if not candidates:
             return None
 
         best = max(candidates, key=lambda item: item["ranking"])
-        size = self._size(
-            best["regime"],
-            best["ask"],
-            best["score"],
-        )
+        size = min(self._size(best["regime"], best["ask"], best["score"]), self.max_order, remaining)
 
-        size = min(size, self.max_order, remaining)
-
-        depth_cap = (
-            best["depth"]
-            * best["ask"]
-            * self.max_depth_participation
-        )
+        depth_cap = best["depth"] * best["ask"] * self.max_depth_participation
         size = min(size, depth_cap)
-
-        # Re-apply every hard cap after depth sizing.
         size = min(
             size,
             self.HARD_MAX_ORDER,
             self.HARD_MAX_MARKET_EXPOSURE - current_exposure,
             self.HARD_MAX_ASSET_EXPOSURE - asset_exposure,
-            self.HARD_MAX_MARKET_EXPOSURE - total_exposure,
+            self.HARD_MAX_TOTAL_EXPOSURE - total_exposure,
             available_cash,
         )
-
         if size < 0.10:
             return None
 
-        seconds_left = market_seconds_left
         reason = (
-            f"V3 "
-            f"regime={best['regime']} "
+            f"V3.1 regime={best['regime']} "
             f"score={best['score']:.3f} "
             f"momentum={best['momentum']:+.4f} "
             f"accel={best['acceleration']:+.4f} "
@@ -488,7 +336,6 @@ class ConvergenceStrategy:
             f"global_exposure={total_exposure:.2f} "
             f"independent=true"
         )
-
         return Signal(
             side=best["side"],
             price=best["ask"],
