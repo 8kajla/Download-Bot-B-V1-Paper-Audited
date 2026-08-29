@@ -482,3 +482,138 @@ def test_order_cap_cannot_exceed_10():
     )
 
     assert strategy.max_order == 10.0
+
+
+# ============================================================
+# V2.2 GLOBAL PORTFOLIO RISK
+# ============================================================
+
+def test_global_exposure_limit_is_hard():
+    strategy = make_strategy(max_total_exposure=25)
+    signal = strategy.decide(
+        150,
+        0.20,
+        0.80,
+        0.19,
+        0.79,
+        history(0.20),
+        history(0.80),
+        0,
+        1000,
+        up_depth=100,
+        down_depth=100,
+        total_exposure=25.0,
+    )
+    assert signal is None
+
+
+def test_global_exposure_is_included_in_remaining_size():
+    strategy = make_strategy(max_total_exposure=25)
+    signal = strategy.decide(
+        150,
+        0.20,
+        0.80,
+        0.19,
+        0.79,
+        history(0.20),
+        history(0.80),
+        0,
+        1000,
+        up_depth=100,
+        down_depth=100,
+        total_exposure=24.0,
+    )
+    if signal is not None:
+        assert signal.notional <= 1.0
+
+
+def test_final_60_second_cutoff_is_independent_of_stop_setting():
+    strategy = make_strategy(stop_sec=300)
+    signal = strategy.decide(
+        240,
+        0.20,
+        0.80,
+        0.19,
+        0.79,
+        history(0.20),
+        history(0.80),
+        0,
+        1000,
+        up_depth=100,
+        down_depth=100,
+    )
+    assert signal is None
+
+
+# ============================================================
+# V2.2 MID / CORE CONFIRMATION
+# ============================================================
+
+def test_flat_mid_price_is_rejected():
+    strategy = make_strategy()
+    signal = strategy.decide(
+        150,
+        0.50,
+        0.49,
+        0.49,
+        0.48,
+        history(0.50),
+        history(0.50),
+        0,
+        1000,
+        up_depth=100,
+        down_depth=0,
+    )
+    assert signal is None
+
+
+def test_flat_core_price_is_rejected():
+    strategy = make_strategy()
+    signal = strategy.decide(
+        150,
+        0.80,
+        0.20,
+        0.79,
+        0.19,
+        history(0.80),
+        history(0.20),
+        0,
+        1000,
+        up_depth=100,
+        down_depth=0,
+    )
+    assert signal is None
+
+
+def test_positive_mid_confirmation_can_trade():
+    strategy = make_strategy()
+    now = time.time()
+    signal = strategy.decide(
+        150,
+        0.50,
+        0.49,
+        0.49,
+        0.48,
+        [
+            (now - 30, 0.460),
+            (now - 10, 0.480),
+        ],
+        [],
+        0,
+        1000,
+        up_depth=100,
+        down_depth=0,
+        now=now,
+    )
+    assert signal is not None
+    assert signal.side == "Up"
+    assert signal.notional <= 2.50
+
+
+# ============================================================
+# V2.2 HARD ORDER CAP
+# ============================================================
+
+def test_v22_order_cap_remains_hard():
+    strategy = make_strategy(max_order=100)
+    assert strategy.max_order == 10.0
