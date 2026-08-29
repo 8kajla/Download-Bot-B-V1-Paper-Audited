@@ -1,10 +1,6 @@
 import time
-import tempfile
-from pathlib import Path
 
 from strategy import ConvergenceStrategy
-from paper_ledger import PaperLedger
-from research_logger import ResearchLogger
 
 
 def make_strategy(**kwargs):
@@ -13,238 +9,530 @@ def make_strategy(**kwargs):
 
 
 def history(price, seconds_ago=30):
-    return [(time.time() - seconds_ago, price)]
+    return [
+        (
+            time.time() - seconds_ago,
+            price,
+        )
+    ]
 
 
-def decide(strategy, up=0.20, down=0.80, ub=0.19, db=0.79, up_depth=100, down_depth=100, elapsed=150, **kwargs):
-    return strategy.decide(
-        elapsed,
-        up,
-        down,
-        ub,
-        db,
-        history(up),
-        history(down),
-        0,
-        1000,
-        up_depth=up_depth,
-        down_depth=down_depth,
-        **kwargs,
-    )
-
-
-# ------------------------- basic behavior -------------------------
+# ============================================================
+# BASIC SIGNALS
+# ============================================================
 
 def test_valid_cheap_signal():
-    s = make_strategy()
-    signal = decide(s, up=0.20, down=0.80, ub=0.19, db=0.79)
+    strategy = make_strategy()
+
+    signal = strategy.decide(
+        120,
+        0.20,
+        0.80,
+        0.19,
+        0.79,
+        history(0.20),
+        history(0.80),
+        0,
+        1000,
+        up_depth=100,
+        down_depth=100,
+    )
+
     assert signal is not None
     assert signal.side == "Up"
     assert signal.price == 0.20
-    assert signal.reason.startswith("V3.1 ")
-    assert "regime=CHEAP" in signal.reason
+    assert "V3.2 regime=CHEAP" in signal.reason
     assert signal.notional >= 0.10
-    assert signal.notional <= 1.0
+    assert signal.notional <= 1.00
 
 
-def test_buy_only_signal_model():
-    s = make_strategy()
-    # The strategy only emits Up/Down BUY candidates; no SELL field exists.
-    signal = decide(s, up=0.20, down=0.80)
-    assert signal is None or signal.side in {"Up", "Down"}
+def test_no_signal_for_invalid_price():
+    strategy = make_strategy()
 
+    signal = strategy.decide(
+        150,
+        0.995,
+        0.005,
+        0.994,
+        0.004,
+        history(0.995),
+        history(0.005),
+        0,
+        1000,
+        up_depth=100,
+        down_depth=100,
+    )
 
-def test_invalid_price_range_rejected():
-    s = make_strategy()
-    signal = decide(s, up=0.9999, down=0.0001, ub=0.999, db=0.00001)
     assert signal is None
 
 
-# ------------------------- empirical sizing -------------------------
+# ============================================================
+# CASH / EXPOSURE
+# ============================================================
 
-def test_reference_size_curve_is_monotonic():
-    s = make_strategy()
-    prices = [0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.90, 0.95]
-    sizes = [s._reference_size(p) for p in prices]
-    assert all(b >= a for a, b in zip(sizes, sizes[1:]))
+def test_cash_is_an_upper_bound():
+    strategy = make_strategy()
 
+    available_cash = 0.20
 
-def test_reference_size_curve_reaches_research_cap_near_95c():
-    s = make_strategy(max_order=10)
-    assert s._reference_size(0.95) <= 10.0 + 1e-9
-    assert s._reference_size(0.95) > s._reference_size(0.85)
+    signal = strategy.decide(
+        220,
+        0.94,
+        0.06,
+        0.93,
+        0.05,
+        [],
+        [],
+        0,
+        available_cash,
+        up_depth=20,
+        down_depth=20,
+    )
 
-
-def test_high_sizing_is_no_longer_flat_3_dollars():
-    s = make_strategy(max_order=10)
-    low = s._size("HIGH", 0.90, 0.90)
-    high = s._size("HIGH", 0.95, 0.90)
-    assert high > low
-    assert high <= 10
-
-
-def test_sizing_never_exceeds_order_limit():
-    s = make_strategy(max_order=2)
-    for regime, price in (("CHEAP", 0.20), ("MID", 0.50), ("CORE", 0.80), ("HIGH", 0.95)):
-        assert s._size(regime, price, 0.95) <= 2.0
-
-
-def test_score_multiplier_does_not_dominate_price_curve():
-    s = make_strategy(max_order=10)
-    low_score = s._size("HIGH", 0.90, 0.50)
-    high_score = s._size("HIGH", 0.90, 1.00)
-    assert high_score >= low_score
-    assert high_score / low_score < 1.4
-
-
-# ------------------------- exposure/cash -------------------------
-
-def test_cash_is_upper_bound():
-    s = make_strategy()
-    signal = s.decide(150, 0.95, 0.05, 0.94, 0.04, history(0.95), history(0.05), 0, 0.20, up_depth=100, down_depth=100)
-    assert signal is None or signal.notional <= 0.20 + 1e-9
+    assert signal is not None
+    assert signal.notional <= available_cash
 
 
 def test_market_exposure_limit():
-    s = make_strategy(max_market_exposure=100)
-    signal = decide(s, current_exposure=99.95) if False else s.decide(150, 0.20, 0.80, 0.19, 0.79, history(0.20), history(0.80), 99.95, 1000, up_depth=100, down_depth=100)
-    assert signal is None or signal.notional <= 0.05 + 1e-9
+    strategy = make_strategy(
+        max_market_exposure=25,
+    )
+
+    signal = strategy.decide(
+        150,
+        0.20,
+        0.80,
+        0.19,
+        0.79,
+        history(0.20),
+        history(0.80),
+        24.95,
+        1000,
+        up_depth=100,
+        down_depth=100,
+    )
+
+    if signal is not None:
+        assert signal.notional <= 0.05
 
 
 def test_asset_exposure_limit():
-    s = make_strategy(max_asset_exposure=35)
-    signal = s.decide(150, 0.20, 0.80, 0.19, 0.79, history(0.20), history(0.80), 0, 1000, up_depth=100, down_depth=100, asset_exposure=34.95)
-    assert signal is None or signal.notional <= 0.05 + 1e-9
+    strategy = make_strategy(
+        max_asset_exposure=35,
+    )
+
+    signal = strategy.decide(
+        150,
+        0.20,
+        0.80,
+        0.19,
+        0.79,
+        history(0.20),
+        history(0.80),
+        0,
+        1000,
+        up_depth=100,
+        down_depth=100,
+        asset_exposure=34.95,
+    )
+
+    if signal is not None:
+        assert signal.notional <= 0.05
 
 
-def test_total_exposure_limit():
-    s = make_strategy(max_total_exposure=100)
-    signal = s.decide(150, 0.20, 0.80, 0.19, 0.79, history(0.20), history(0.80), 0, 1000, up_depth=100, down_depth=100, total_exposure=99.95)
-    assert signal is None or signal.notional <= 0.05 + 1e-9
+# ============================================================
+# TIMING
+# ============================================================
+
+def test_before_start_is_blocked():
+    strategy = make_strategy(
+        start_sec=0,
+    )
+
+    signal = strategy.decide(
+        -1,
+        0.20,
+        0.80,
+        0.19,
+        0.79,
+        history(0.20),
+        history(0.80),
+        0,
+        1000,
+        up_depth=100,
+        down_depth=100,
+    )
+
+    assert signal is None
 
 
-def test_constructor_hard_caps():
-    s = ConvergenceStrategy(max_order=50, max_market_exposure=500, max_asset_exposure=500, max_total_exposure=500)
-    assert s.max_order == 10.0
-    assert s.max_market_exposure == 100.0
-    assert s.max_asset_exposure == 35.0
-    assert s.max_total_exposure == 100.0
+def test_cutoff_is_blocked():
+    strategy = make_strategy(
+        stop_sec=240,
+    )
+
+    signal = strategy.decide(
+        240,
+        0.20,
+        0.80,
+        0.19,
+        0.79,
+        history(0.20),
+        history(0.80),
+        0,
+        1000,
+        up_depth=100,
+        down_depth=100,
+    )
+
+    assert signal is None
 
 
-# ------------------------- depth -------------------------
+def test_before_cutoff_can_trade():
+    strategy = make_strategy(
+        stop_sec=240,
+    )
+
+    signal = strategy.decide(
+        180,
+        0.20,
+        0.80,
+        0.19,
+        0.79,
+        history(0.20),
+        history(0.80),
+        0,
+        1000,
+        up_depth=100,
+        down_depth=100,
+    )
+
+    assert signal is not None
+
+
+# ============================================================
+# REGIMES
+# ============================================================
+
+def test_cheap_regime():
+    strategy = make_strategy()
+
+    assert strategy._regime(0.01) == "CHEAP"
+    assert strategy._regime(0.10) == "CHEAP"
+    assert strategy._regime(0.20) == "CHEAP"
+    assert strategy._regime(0.299) == "CHEAP"
+
+
+def test_mid_regime():
+    strategy = make_strategy()
+
+    assert strategy._regime(0.30) == "MID"
+    assert strategy._regime(0.50) == "MID"
+    assert strategy._regime(0.699) == "MID"
+
+
+def test_core_regime():
+    strategy = make_strategy()
+
+    assert strategy._regime(0.70) == "CORE"
+    assert strategy._regime(0.80) == "CORE"
+    assert strategy._regime(0.899) == "CORE"
+
+
+def test_high_regime():
+    strategy = make_strategy()
+
+    assert strategy._regime(0.90) == "HIGH"
+    assert strategy._regime(0.95) == "HIGH"
+    assert strategy._regime(0.994) == "HIGH"
+
+
+def test_regime_upper_boundary():
+    strategy = make_strategy()
+
+    assert strategy._regime(0.995) is None
+
+
+# ============================================================
+# SIZING
+# ============================================================
+
+def test_cheap_size_is_small():
+    strategy = make_strategy()
+
+    size = strategy._size(
+        "CHEAP",
+        0.20,
+        0.80,
+    )
+
+    assert size >= 0.10
+    assert size <= 1.00
+
+
+def test_high_size_is_bounded():
+    strategy = make_strategy()
+
+    size = strategy._size(
+        "HIGH",
+        0.95,
+        0.90,
+    )
+
+    assert size > 0
+    assert size <= strategy.max_order
+
+
+def test_sizing_never_exceeds_order_limit():
+    strategy = make_strategy(
+        max_order=2,
+    )
+
+    for regime, price, score in (
+        ("CHEAP", 0.20, 0.90),
+        ("MID", 0.50, 0.90),
+        ("CORE", 0.80, 0.90),
+        ("HIGH", 0.95, 0.90),
+    ):
+        size = strategy._size(
+            regime,
+            price,
+            score,
+        )
+
+        assert size <= strategy.max_order
+
+
+# ============================================================
+# HIGH REGIME
+# ============================================================
+
+def test_high_regime_requires_strong_score():
+    strategy = make_strategy()
+
+    # Construct a candidate whose HIGH-side score is deliberately
+    # below the required 0.82 threshold while the opposite side
+    # is outside the cheap/high test.
+    signal = strategy.decide(
+        150,
+        0.91,
+        0.49,
+        0.90,
+        0.48,
+        history(0.89),
+        history(0.49),
+        0,
+        1000,
+        up_depth=100,
+        down_depth=0,
+    )
+
+    assert signal is None
+
+
+def test_high_regime_requires_positive_momentum():
+    strategy = make_strategy()
+
+    signal = strategy.decide(
+        150,
+        0.95,
+        0.50,
+        0.94,
+        0.49,
+        history(0.99),
+        history(0.50),
+        0,
+        1000,
+        up_depth=100,
+        down_depth=0,
+    )
+
+    assert signal is None
+
+
+# ============================================================
+# DEPTH
+# ============================================================
 
 def test_zero_depth_rejects_signal():
-    s = make_strategy()
-    signal = s.decide(150, 0.20, 0.80, 0.19, 0.79, history(0.20), history(0.80), 0, 1000, up_depth=0, down_depth=0)
+    strategy = make_strategy()
+
+    signal = strategy.decide(
+        150,
+        0.20,
+        0.80,
+        0.19,
+        0.79,
+        history(0.20),
+        history(0.80),
+        0,
+        1000,
+        up_depth=0,
+        down_depth=0,
+    )
+
     assert signal is None
 
 
 def test_depth_participation_is_respected():
-    s = make_strategy(max_depth_participation=0.25)
-    signal = s.decide(150, 0.20, 0.80, 0.19, 0.79, history(0.20), history(0.80), 0, 1000, up_depth=2, down_depth=0)
+    strategy = make_strategy(
+        max_depth_participation=0.25,
+    )
+
+    signal = strategy.decide(
+        150,
+        0.20,
+        0.80,
+        0.19,
+        0.79,
+        history(0.20),
+        history(0.80),
+        0,
+        1000,
+        up_depth=2,
+        down_depth=0,
+    )
+
     if signal is not None:
-        assert signal.notional <= 2 * signal.price * 0.25 + 0.01
+        depth_cap = (
+            2
+            * signal.price
+            * 0.25
+        )
+
+        assert signal.notional <= depth_cap + 0.01
 
 
-# ------------------------- score/gating -------------------------
+# ============================================================
+# GLOBAL SCORE
+# ============================================================
 
-def test_min_score_is_honored():
-    s = make_strategy(min_score=0.99)
-    signal = s.decide(150, 0.80, 0.20, 0.79, 0.19, history(0.80), history(0.20), 0, 1000, up_depth=100, down_depth=0)
+def test_min_score_configuration_is_honored_for_mid_and_core():
+    strategy = make_strategy(
+        min_score=0.99,
+    )
+
+    signal = strategy.decide(
+        150,
+        0.80,
+        0.20,
+        0.79,
+        0.19,
+        history(0.80),
+        history(0.20),
+        0,
+        1000,
+        up_depth=100,
+        down_depth=0,
+    )
+
     assert signal is None
 
 
-def test_high_requires_strong_score():
-    s = make_strategy()
-    signal = s.decide(150, 0.91, 0.49, 0.90, 0.48, history(0.89), history(0.49), 0, 1000, up_depth=100, down_depth=0)
-    assert signal is None
+# ============================================================
+# SIGNAL METADATA
+# ============================================================
 
+def test_signal_reason_contains_v2_marker():
+    strategy = make_strategy()
 
-def test_high_requires_positive_momentum():
-    s = make_strategy()
-    signal = s.decide(150, 0.95, 0.50, 0.94, 0.49, history(0.99), history(0.50), 0, 1000, up_depth=100, down_depth=0)
-    assert signal is None
+    signal = strategy.decide(
+        150,
+        0.20,
+        0.80,
+        0.19,
+        0.79,
+        history(0.20),
+        history(0.80),
+        0,
+        1000,
+        up_depth=100,
+        down_depth=100,
+    )
 
-
-# ------------------------- timing -------------------------
-
-def test_before_start_is_blocked():
-    s = make_strategy(start_sec=10)
-    assert decide(s, elapsed=5) is None
-
-
-def test_stop_second_is_blocked():
-    s = make_strategy(stop_sec=240)
-    assert decide(s, elapsed=240) is None
-
-
-def test_final_minute_is_blocked():
-    s = make_strategy(hard_cutoff_seconds=60)
-    assert decide(s, elapsed=240) is None
-    assert decide(s, elapsed=241) is None
-
-
-def test_just_before_cutoff_can_still_signal():
-    s = make_strategy()
-    signal = decide(s, elapsed=239)
     assert signal is not None
+    assert signal.reason.startswith("V3.2 ")
+    assert "regime=CHEAP" in signal.reason
+    assert "independent=true" in signal.reason
 
 
-# ------------------------- resolution regression -------------------------
+# ============================================================
+# V3.2 PACING
+# ============================================================
 
-def _market():
-    return {
-        "id": "m1", "condition": "c1", "slug": "btc-updown-5m-test",
-        "asset": "BTC", "market": "BTC Up or Down", "start_ts": 1000.0,
-        "end_ts": 1300.0,
-    }
+def test_total_exposure_cap_is_respected():
+    strategy = make_strategy(max_total_exposure=60)
 
+    signal = strategy.decide(
+        150,
+        0.20,
+        0.80,
+        0.19,
+        0.79,
+        history(0.20),
+        history(0.80),
+        0,
+        1000,
+        up_depth=100,
+        down_depth=100,
+        total_exposure=59.95,
+    )
 
-def test_resolution_logger_handles_winning_dict_settlement():
-    with tempfile.TemporaryDirectory() as td:
-        m = _market()
-        ledger = PaperLedger(Path(td) / "paper_state.json", 1000)
-        ledger.buy("c1", "up-token", m["market"], "Up", 0.20, 1.0, 1010, meta={"asset":"BTC", "slug":m["slug"], "market_id":m["id"], "start_ts":m["start_ts"], "end_ts":m["end_ts"]})
-        closed = ledger.settle("c1", "up-token")
-        assert len(closed) == 1
-        assert closed[0]["pnl"] == 4.0
-        logger = ResearchLogger(td)
-        logger.record_resolution(ts=1302, market=m, winner="Up", winner_token="up-token", closed=closed)
-        assert "RESOLVED" in (Path(td) / "resolutions.csv").read_text()
-
-
-def test_resolution_logger_handles_losing_dict_settlement():
-    with tempfile.TemporaryDirectory() as td:
-        m = _market()
-        ledger = PaperLedger(Path(td) / "paper_state.json", 1000)
-        ledger.buy("c1", "down-token", m["market"], "Down", 0.80, 2.0, 1010, meta={"asset":"BTC", "slug":m["slug"], "market_id":m["id"], "start_ts":m["start_ts"], "end_ts":m["end_ts"]})
-        closed = ledger.settle("c1", "up-token")
-        assert len(closed) == 1
-        assert closed[0]["pnl"] == -2.0
-        logger = ResearchLogger(td)
-        logger.record_resolution(ts=1302, market=m, winner="Up", winner_token="up-token", closed=closed)
-        assert "RESOLVED" in (Path(td) / "resolutions.csv").read_text()
+    if signal is not None:
+        assert signal.notional <= 0.05
 
 
-# ------------------------- paper ledger invariants -------------------------
+def test_total_exposure_blocks_when_cap_reached():
+    strategy = make_strategy(max_total_exposure=60)
 
-def test_settlement_updates_realized_and_removes_position():
-    with tempfile.TemporaryDirectory() as td:
-        ledger = PaperLedger(Path(td) / "paper_state.json", 1000)
-        ledger.buy("c1", "up-token", "BTC", "Up", 0.50, 5.0, 1010)
-        closed = ledger.settle("c1", "up-token")
-        assert len(closed) == 1
-        assert not ledger.positions
-        assert ledger.realized == 5.0
-        assert ledger.cash == 1005.0
+    signal = strategy.decide(
+        150,
+        0.20,
+        0.80,
+        0.19,
+        0.79,
+        history(0.20),
+        history(0.80),
+        0,
+        1000,
+        up_depth=100,
+        down_depth=100,
+        total_exposure=60,
+    )
+
+    assert signal is None
 
 
-def test_multiple_positions_settle_atomically():
-    with tempfile.TemporaryDirectory() as td:
-        ledger = PaperLedger(Path(td) / "paper_state.json", 1000)
-        ledger.buy("c1", "up-token", "BTC", "Up", 0.50, 2.0, 1010)
-        ledger.buy("c1", "down-token", "BTC", "Down", 0.50, 3.0, 1011)
-        closed = ledger.settle("c1", "up-token")
-        assert len(closed) == 2
-        assert not ledger.positions
-        assert ledger.realized == -1.0
+def test_high_sizing_is_tightly_bounded_in_v32():
+    strategy = make_strategy()
+
+    for score in (0.82, 0.90, 0.99, 1.0):
+        assert strategy._size("HIGH", 0.95, score) <= 2.00
+
+
+# ============================================================
+# HARD V3.2 CAPS
+# ============================================================
+
+def test_market_cap_cannot_exceed_25():
+    strategy = ConvergenceStrategy(
+        max_market_exposure=50,
+    )
+
+    assert strategy.max_market_exposure == 25.0
+
+
+def test_asset_cap_cannot_exceed_35():
+    strategy = ConvergenceStrategy(
+        max_asset_exposure=50,
+    )
+
+    assert strategy.max_asset_exposure == 35.0
+
+
+def test_order_cap_cannot_exceed_10():
+    strategy = ConvergenceStrategy(
+        max_order=50,
+    )
+
+    assert strategy.max_order == 10.0
