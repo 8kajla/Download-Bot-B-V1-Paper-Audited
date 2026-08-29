@@ -239,7 +239,7 @@ strategy = ConvergenceStrategy(
     max_total_exposure=float(
         os.getenv(
             "MAX_TOTAL_EXPOSURE",
-            "100",
+            "60",
         )
     ),
 )
@@ -429,11 +429,6 @@ def resolve_pending(now):
                 f'RESOLUTION ERROR | '
                 f'{m["slug"]} | '
                 f'{type(e).__name__}: {e}'
-            )
-            log.error(
-                "RESOLUTION TRACE | %s",
-                m["slug"],
-                exc_info=True,
             )
 
 def report(books):
