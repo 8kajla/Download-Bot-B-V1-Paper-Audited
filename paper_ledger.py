@@ -33,7 +33,12 @@ class PaperLedger:
         closed=[]
         for key,p in list(self.positions.items()):
             if p['condition']!=condition: continue
-            payout=p['shares'] if p['token']==winner_token else 0.; pnl=payout-p['cost']; self.cash+=payout; self.realized+=pnl
-            self.trades.append({'ts':time.time(),'action':'SETTLE','condition':condition,'token':p['token'],'side':p['side'],'price':p['avg'],'shares':p['shares'],'notional':p['cost'],'payout':payout,'pnl':pnl,'status':'WIN' if pnl>=0 else 'LOSS'}); closed.append((key,pnl)); del self.positions[key]
+            payout=p['shares'] if p['token']==winner_token else 0.
+            pnl=payout-p['cost']
+            settlement_per_share=1.0 if p['token']==winner_token else 0.0
+            self.cash+=payout; self.realized+=pnl
+            self.trades.append({'ts':time.time(),'action':'SETTLE','condition':condition,'token':p['token'],'side':p['side'],'price':p['avg'],'shares':p['shares'],'notional':p['cost'],'payout':payout,'pnl':pnl,'settlement_per_share':settlement_per_share,'status':'WIN' if pnl>=0 else 'LOSS'})
+            closed.append({'key':key,'pnl':pnl,'settlement_per_share':settlement_per_share,'shares':p['shares'],'cost':p['cost'],'payout':payout,'side':p['side']})
+            del self.positions[key]
         if closed:self.save()
         return closed
