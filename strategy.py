@@ -13,7 +13,7 @@ class Signal:
 
 class ConvergenceStrategy:
     """
-    BOT B V2.2
+    BOT B V3.0
 
     Paper-only behavioral proxy for the trader dataset.
 
@@ -36,7 +36,7 @@ class ConvergenceStrategy:
     private trader's trigger.
     """
 
-    VERSION = "V2.2"
+    VERSION = "V3.0"
 
     CHEAP_MIN = 0.01
     CHEAP_MAX = 0.30
@@ -72,7 +72,7 @@ class ConvergenceStrategy:
         layer_b_min_score=0.82,
         max_depth_participation=0.25,
         max_asset_exposure=35,
-        max_total_exposure=25,
+        max_total_exposure=100,
         hard_cutoff_seconds=60,
     ):
         self.bankroll = float(bankroll)
@@ -273,66 +273,67 @@ class ConvergenceStrategy:
         return False
 
     def _size(self, regime, price, score):
-        price = self._clamp(price)
+        """
+        V3 continuous sizing proxy.
+
+        The reference data shows notional rising smoothly and strongly with
+        entry price. We therefore avoid a single flat order size while still
+        preserving conservative experimental caps by regime.
+
+        These are replica constraints, not claims about the private trader's
+        exact sizing formula.
+        """
+        price = self._clamp(price, 0.0, 0.999)
         score = self._clamp(score)
 
+        # Smooth/geometric price effect: low prices stay small while higher
+        # prices receive larger base allocations.
+        # Normalize price on a log-odds-like curve, then blend in signal
+        # strength. This is intentionally continuous rather than tiered.
+        p = max(0.01, min(0.995, price))
+        price_factor = self._clamp(
+            (p ** 1.55) / (0.995 ** 1.55),
+            0.0,
+            1.0,
+        )
+        strength = 0.70 + 0.30 * score
+
         if regime == "CHEAP":
-            progress = self._clamp(
-                (price - self.layer_a_min_price)
-                / max(
-                    0.0001,
-                    self.layer_a_max_price - self.layer_a_min_price,
-                )
-            )
-            size = (
-                self.layer_a_base_notional
-                + (
-                    self.layer_a_max_notional
-                    - self.layer_a_base_notional
-                )
-                * progress
-                * (0.65 + 0.35 * score)
-            )
-            return min(
-                self.layer_a_max_notional,
-                self.max_order,
-                max(self.layer_a_base_notional, size),
-            )
+            floor = max(0.10, self.layer_a_base_notional)
+            cap = min(self.max_order, self.layer_a_max_notional)
+        elif regime == "MID":
+            floor = 0.25
+            cap = min(self.max_order, 2.50)
+        elif regime == "CORE":
+            floor = 0.50
+            cap = min(self.max_order, 4.00)
+        elif regime == "HIGH":
+            # High-price trades are real in the reference data, but the
+            # previous V1 late-convergence sizing was a measured loss driver.
+            # Keep this region active but deliberately capped.
+            floor = min(self.max_order, 1.50)
+            cap = min(self.max_order, 3.00)
+        else:
+            return 0.0
 
-        if regime == "MID":
-            return min(
-                self.max_order,
-                2.50,
-                max(0.50, 0.50 + 2.00 * score),
-            )
+        # Map each regime continuously across its own price range so there
+        # are no abrupt sizing jumps at 0.30/0.70/0.90.
+        if regime == "CHEAP":
+            lo, hi = self.CHEAP_MIN, self.CHEAP_MAX
+        elif regime == "MID":
+            lo, hi = self.MID_MIN, self.MID_MAX
+        elif regime == "CORE":
+            lo, hi = self.CORE_MIN, self.CORE_MAX
+        else:
+            lo, hi = self.HIGH_MIN, self.HIGH_MAX
 
-        if regime == "CORE":
-            return min(
-                self.max_order,
-                4.00,
-                max(1.00, 1.00 + 3.00 * score),
-            )
+        local = self._clamp((p - lo) / max(0.0001, hi - lo))
+        # Smooth within-regime curve, with a stronger price effect than the
+        # score effect, matching the observed monotonic price/size finding.
+        curved = local ** 1.35
+        size = floor + (cap - floor) * curved * strength
 
-        if regime == "HIGH":
-            strength = self._clamp(
-                (score - self.layer_b_min_score)
-                / max(0.0001, 1.0 - self.layer_b_min_score)
-            )
-            size = (
-                self.layer_b_base_notional
-                + (
-                    self.layer_b_max_notional
-                    - self.layer_b_base_notional
-                )
-                * strength
-            )
-            return min(
-                self.layer_b_max_notional,
-                self.max_order,
-                max(self.layer_b_base_notional, size),
-            )
-
-        return 0.0
+        return min(cap, self.max_order, max(floor, size))
 
     def decide(
         self,
@@ -475,7 +476,7 @@ class ConvergenceStrategy:
 
         seconds_left = market_seconds_left
         reason = (
-            f"V2 "
+            f"V3 "
             f"regime={best['regime']} "
             f"score={best['score']:.3f} "
             f"momentum={best['momentum']:+.4f} "
