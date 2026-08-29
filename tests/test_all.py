@@ -4,10 +4,8 @@ from strategy import ConvergenceStrategy
 
 
 def make_strategy(**kwargs):
-    return ConvergenceStrategy(
-        max_order=10,
-        **kwargs,
-    )
+    kwargs.setdefault("max_order", 10)
+    return ConvergenceStrategy(**kwargs)
 
 
 def history(price, seconds_ago=30):
