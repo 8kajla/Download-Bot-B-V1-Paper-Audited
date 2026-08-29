@@ -14,141 +14,399 @@ class Signal:
 
 class ConvergenceStrategy:
     """
-    Bot B V2 — independent paper strategy inspired by observed trader behavior.
+    BOT B V2
 
-    This is NOT a copy bot. It never reads trader activity.
+    Independent paper-trading strategy based on the observable behavioral
+    characteristics found in the trader dataset.
 
-    V2 behavioral targets:
-      - 0.01-0.30 cheap regime: primary trade-count regime
-      - 0.30-0.70 middle regime: genuine coverage
-      - 0.70-0.90 core regime: preserved because V1 was profitable here
-      - 0.90-0.995 high regime: sharply restricted because V1 lost here
-      - dynamic sizing
-      - rapid repeated entries
-      - no forced exits/hedges
-      - final 60 seconds blocked
+    IMPORTANT:
+    This is NOT a copy-trading strategy. It does not read or follow the
+    trader's individual orders.
 
-    The trader's actual private trigger is unknown. The observable
-    microstructure score below is therefore a research hypothesis, not
-    a claim that we recovered his private algorithm.
+    V2 price regimes:
+
+        CHEAP : 0.01 <= price < 0.30
+        MID   : 0.30 <= price < 0.70
+        CORE  : 0.70 <= price < 0.90
+        HIGH  : 0.90 <= price < 0.995
+
+    The trader's actual private entry trigger is unknown, so the signal
+    calculation is an independently inferred market-microstructure
+    hypothesis.
+
+    Hard rule:
+
+        No new entries during the final 60 seconds.
     """
+
+    # ============================================================
+    # V2 PRICE REGIMES
+    # ============================================================
 
     CHEAP_MIN = 0.01
     CHEAP_MAX = 0.30
+
     MID_MIN = 0.30
     MID_MAX = 0.70
+
     CORE_MIN = 0.70
     CORE_MAX = 0.90
+
     HIGH_MIN = 0.90
     HIGH_MAX = 0.995
+
+    # ============================================================
+    # INITIALIZATION
+    # ============================================================
 
     def __init__(
         self,
         bankroll=1000,
+
         max_market_exposure=25,
         max_order=10,
+
         layer_a_min_price=0.01,
         layer_a_max_price=0.30,
+
         layer_b_min_price=0.90,
         layer_b_max_price=0.995,
+
         layer_a_base_notional=0.15,
-        layer_a_max_notional=3.00,
+        layer_a_max_notional=1.00,
+
         layer_b_base_notional=2.00,
-        layer_b_max_notional=7.50,
+        layer_b_max_notional=3.00,
+
         start_sec=0,
         stop_sec=240,
+
         min_score=0.50,
+
         layer_a_min_score=0.45,
-        layer_b_min_score=0.65,
+        layer_b_min_score=0.82,
+
         max_depth_participation=0.25,
+
         max_asset_exposure=35,
     ):
         self.bankroll = float(bankroll)
 
-        # Keep compatibility with the existing bot.py constructor. V2 owns
-        # the regime boundaries so stale V1 A/B environment variables cannot
-        # silently restore the old two-layer strategy.
-        self.max_market_exposure = min(float(max_market_exposure), 25.0)
-        self.max_order = float(max_order)
+        # --------------------------------------------------------
+        # HARD V2 RISK CAPS
+        # --------------------------------------------------------
 
+        # Even if the environment contains the old V1 values of 50,
+        # V2 will never allow these limits to exceed the V2 caps.
+
+        self.max_market_exposure = min(
+            float(max_market_exposure),
+            25.0,
+        )
+
+        self.max_asset_exposure = min(
+            float(max_asset_exposure),
+            35.0,
+        )
+
+        self.max_order = min(
+            float(max_order),
+            10.0,
+        )
+
+        # --------------------------------------------------------
+        # V2 REGIME BOUNDARIES
+        # --------------------------------------------------------
+
+        # CHEAP regime
         self.layer_a_min_price = self.CHEAP_MIN
         self.layer_a_max_price = self.CHEAP_MAX
+
+        # HIGH regime
         self.layer_b_min_price = self.HIGH_MIN
         self.layer_b_max_price = self.HIGH_MAX
 
-        self.layer_a_base_notional = float(layer_a_base_notional)
-        self.layer_a_max_notional = float(layer_a_max_notional)
-        self.layer_b_base_notional = float(layer_b_base_notional)
-        self.layer_b_max_notional = float(layer_b_max_notional)
+        # --------------------------------------------------------
+        # CHEAP SIZING
+        # --------------------------------------------------------
 
-        self.start_sec = float(start_sec)
-        self.stop_sec = float(stop_sec)
-        self.min_score = float(min_score)
-        self.layer_a_min_score = float(layer_a_min_score)
-        self.layer_b_min_score = float(layer_b_min_score)
-        self.max_depth_participation = float(max_depth_participation)
-        self.max_asset_exposure = min(float(max_asset_exposure), 35.0)
+        self.layer_a_base_notional = max(
+            0.10,
+            float(layer_a_base_notional),
+        )
+
+        self.layer_a_max_notional = min(
+            1.00,
+            float(layer_a_max_notional),
+        )
+
+        # --------------------------------------------------------
+        # HIGH SIZING
+        # --------------------------------------------------------
+
+        self.layer_b_base_notional = min(
+            2.00,
+            float(layer_b_base_notional),
+        )
+
+        self.layer_b_max_notional = min(
+            3.00,
+            float(layer_b_max_notional),
+        )
+
+        # --------------------------------------------------------
+        # TIMING
+        # --------------------------------------------------------
+
+        self.start_sec = float(
+            start_sec
+        )
+
+        self.stop_sec = float(
+            stop_sec
+        )
+
+        # --------------------------------------------------------
+        # SIGNAL THRESHOLDS
+        # --------------------------------------------------------
+
+        self.min_score = float(
+            min_score
+        )
+
+        self.layer_a_min_score = float(
+            layer_a_min_score
+        )
+
+        # HIGH regime is deliberately much stricter than V1.
+        #
+        # V1 repeatedly bought 90-100c favorites and lost money.
+        # Therefore a HIGH trade requires >= 0.82 score regardless
+        # of a lower environment setting.
+
+        self.layer_b_min_score = max(
+            0.82,
+            float(layer_b_min_score),
+        )
+
+        # --------------------------------------------------------
+        # ORDER BOOK LIMIT
+        # --------------------------------------------------------
+
+        self.max_depth_participation = min(
+            0.25,
+            max(
+                0.01,
+                float(max_depth_participation),
+            ),
+        )
+
+    # ============================================================
+    # BASIC HELPERS
+    # ============================================================
 
     @staticmethod
-    def _clamp(value, low=0.0, high=1.0):
-        return max(low, min(high, float(value)))
+    def _clamp(
+        value,
+        low=0.0,
+        high=1.0,
+    ):
+        return max(
+            low,
+            min(
+                high,
+                float(value),
+            ),
+        )
 
-    @staticmethod
-    def _features(ask, bid, hist, now):
-        if ask is None:
-            return None
-
-        ask = float(ask)
-        if not 0.0 < ask < 1.0:
-            return None
-
-        bid = float(bid) if bid is not None else None
-        spread = max(0.0, ask - bid) if bid is not None else 0.02
-
-        history = []
-        for item in hist or []:
-            try:
-                timestamp = float(item[0])
-                price = float(item[1])
-                if 0.0 < price < 1.0:
-                    history.append((timestamp, price))
-            except (TypeError, ValueError, IndexError):
-                continue
-
-        history.sort(key=lambda x: x[0])
-
-        momentum = 0.0
-        acceleration = 0.0
-
-        if history:
-            def nearest(seconds):
-                return min(
-                    history,
-                    key=lambda x: abs((now - x[0]) - seconds),
-                )[1]
-
-            p30 = nearest(30.0)
-            p10 = nearest(10.0)
-
-            momentum = ask - p30
-            acceleration = (ask - p10) - (p10 - p30)
-
-        return spread, momentum, acceleration
+    # ============================================================
+    # PRICE REGIME
+    # ============================================================
 
     @staticmethod
     def _regime(price):
+        """
+        Determine which V2 price regime a contract belongs to.
+        """
+
         price = float(price)
 
-        if 0.01 <= price < 0.30:
+        if (
+            0.01
+            <= price
+            < 0.30
+        ):
             return "CHEAP"
-        if 0.30 <= price < 0.70:
+
+        if (
+            0.30
+            <= price
+            < 0.70
+        ):
             return "MID"
-        if 0.70 <= price < 0.90:
+
+        if (
+            0.70
+            <= price
+            < 0.90
+        ):
             return "CORE"
-        if 0.90 <= price < 1.00:
+
+        if (
+            0.90
+            <= price
+            < 0.995
+        ):
             return "HIGH"
 
         return None
+
+    # ============================================================
+    # MARKET FEATURES
+    # ============================================================
+
+    @staticmethod
+    def _features(
+        ask,
+        bid,
+        history,
+        now,
+    ):
+        """
+        Extract observable short-term market features.
+
+        Returns:
+
+            spread
+            momentum
+            acceleration
+        """
+
+        if ask is None:
+            return None
+
+        ask = float(
+            ask
+        )
+
+        if not (
+            0.0
+            < ask
+            < 1.0
+        ):
+            return None
+
+        if bid is not None:
+            bid = float(
+                bid
+            )
+
+        spread = (
+            max(
+                0.0,
+                ask - bid,
+            )
+            if bid is not None
+            else 0.02
+        )
+
+        points = []
+
+        for item in history or []:
+
+            try:
+                timestamp = float(
+                    item[0]
+                )
+
+                price = float(
+                    item[1]
+                )
+
+                if (
+                    0.0
+                    < price
+                    < 1.0
+                ):
+                    points.append(
+                        (
+                            timestamp,
+                            price,
+                        )
+                    )
+
+            except (
+                TypeError,
+                ValueError,
+                IndexError,
+            ):
+                continue
+
+        points.sort()
+
+        # No historical observations yet.
+        if not points:
+            return (
+                spread,
+                0.0,
+                0.0,
+            )
+
+        def nearest(
+            seconds_ago
+        ):
+            return min(
+                points,
+                key=lambda x:
+                    abs(
+                        (
+                            now
+                            - x[0]
+                        )
+                        - seconds_ago
+                    ),
+            )[1]
+
+        # --------------------------------------------------------
+        # 30 SECOND MOMENTUM
+        # --------------------------------------------------------
+
+        p30 = nearest(
+            30.0
+        )
+
+        # --------------------------------------------------------
+        # 10 SECOND PRICE
+        # --------------------------------------------------------
+
+        p10 = nearest(
+            10.0
+        )
+
+        # Positive = current ask is higher than historical ask.
+        momentum = (
+            ask
+            - p30
+        )
+
+        # Measures whether recent movement is accelerating.
+        acceleration = (
+            ask
+            - p10
+        ) - (
+            p10
+            - p30
+        )
+
+        return (
+            spread,
+            momentum,
+            acceleration,
+        )
+
+    # ============================================================
+    # V2 SCORE
+    # ============================================================
 
     def _score(
         self,
@@ -160,97 +418,142 @@ class ConvergenceStrategy:
         elapsed,
     ):
         """
-        Observable-market ranking score, NOT calibrated probability.
-        """
-        momentum_score = self._clamp(0.5 + momentum * 8.0)
-        acceleration_score = self._clamp(0.5 + acceleration * 10.0)
-        price_extremeness = self._clamp(abs(ask - 0.50) / 0.50)
+        Calculate the V2 observable-market ranking score.
 
-        span = max(1.0, self.stop_sec - self.start_sec)
-        time_score = self._clamp(
-            (elapsed - self.start_sec) / span
+        This is NOT a probability of winning.
+        """
+
+        # --------------------------------------------------------
+        # MOMENTUM
+        # --------------------------------------------------------
+
+        momentum_score = self._clamp(
+            0.5
+            +
+            momentum
+            * 8.0
         )
+
+        # --------------------------------------------------------
+        # ACCELERATION
+        # --------------------------------------------------------
+
+        acceleration_score = self._clamp(
+            0.5
+            +
+            acceleration
+            * 10.0
+        )
+
+        # --------------------------------------------------------
+        # PRICE EXTREMENESS
+        # --------------------------------------------------------
+
+        price_extremeness = self._clamp(
+            abs(
+                ask
+                - 0.50
+            )
+            / 0.50
+        )
+
+        # --------------------------------------------------------
+        # TIME
+        # --------------------------------------------------------
+
+        time_score = self._clamp(
+            (
+                elapsed
+                - self.start_sec
+            )
+            /
+            max(
+                1.0,
+                self.stop_sec
+                - self.start_sec,
+            )
+        )
+
+        # --------------------------------------------------------
+        # SPREAD
+        # --------------------------------------------------------
 
         spread_score = self._clamp(
-            1.0 - max(0.0, spread - 0.01) / 0.05
+            1.0
+            -
+            max(
+                0.0,
+                spread
+                - 0.01,
+            )
+            / 0.05
         )
+
+        # --------------------------------------------------------
+        # DEPTH
+        # --------------------------------------------------------
 
         depth_reference = max(
             1.0,
-            self.max_order / max(ask, 0.01),
+            self.max_order
+            /
+            max(
+                ask,
+                0.01,
+            ),
         )
+
         depth_score = self._clamp(
-            float(depth) / depth_reference
+            float(depth)
+            /
+            depth_reference
+        )
+
+        # --------------------------------------------------------
+        # FINAL SCORE
+        # --------------------------------------------------------
+
+        score = (
+            0.30
+            * momentum_score
+
+            +
+
+            0.18
+            * acceleration_score
+
+            +
+
+            0.18
+            * price_extremeness
+
+            +
+
+            0.14
+            * time_score
+
+            +
+
+            0.12
+            * depth_score
+
+            +
+
+            0.08
+            * spread_score
         )
 
         return self._clamp(
-            0.30 * momentum_score
-            + 0.18 * acceleration_score
-            + 0.18 * price_extremeness
-            + 0.14 * time_score
-            + 0.12 * depth_score
-            + 0.08 * spread_score
+            score
         )
 
-    def _cheap_signal(
-        self,
-        score,
-        momentum,
-        acceleration,
-        spread,
-        depth,
-        ask,
-    ):
-        """
-        Cheap-layer hypothesis.
+    # ============================================================
+    # REGIME ENTRY RULES
+    # ============================================================
 
-        The old V1 price score mechanically suppressed prices below 0.50.
-        V2 therefore uses the score only as a ranking threshold and requires
-        basic observable book quality.
-        """
-        return (
-            score >= self.layer_a_min_score
-            and momentum >= -0.0025
-            and acceleration >= -0.0025
-            and spread <= 0.05
-            and depth > 0.0
-            and ask >= self.CHEAP_MIN
-        )
-
-    def _mid_signal(
+    def _allowed(
         self,
-        score,
-        momentum,
-        acceleration,
-        spread,
-        depth,
-    ):
-        return (
-            score >= 0.58
-            and momentum >= -0.0015
-            and acceleration >= -0.0020
-            and spread <= 0.05
-            and depth > 0.0
-        )
-
-    def _core_signal(
-        self,
-        score,
-        momentum,
-        acceleration,
-        spread,
-        depth,
-    ):
-        return (
-            score >= 0.58
-            and momentum >= -0.0020
-            and acceleration >= -0.0025
-            and spread <= 0.05
-            and depth > 0.0
-        )
-
-    def _high_signal(
-        self,
+        regime,
         score,
         momentum,
         acceleration,
@@ -259,114 +562,400 @@ class ConvergenceStrategy:
         elapsed,
     ):
         """
-        V1's 90-100c late-convergence regime was the confirmed loss driver.
-        Keep it only as a very selective, small-size hypothesis.
+        Determine whether a candidate is eligible for entry.
         """
-        return (
-            score >= max(0.82, self.layer_b_min_score + 0.17)
-            and momentum >= 0.0020
-            and acceleration >= 0.0
-            and spread <= 0.035
-            and depth > 0.0
-            and elapsed >= 90.0
-        )
 
-    def _size_for_regime(
+        # Basic market-quality filter.
+        if depth <= 0:
+            return False
+
+        if spread > 0.05:
+            return False
+
+        # --------------------------------------------------------
+        # CHEAP
+        # --------------------------------------------------------
+
+        if regime == "CHEAP":
+
+            return (
+                score
+                >=
+                self.layer_a_min_score
+
+                and
+
+                momentum
+                >=
+                -0.0025
+
+                and
+
+                acceleration
+                >=
+                -0.0040
+            )
+
+        # --------------------------------------------------------
+        # MID
+        # --------------------------------------------------------
+
+        if regime == "MID":
+
+            return (
+                score
+                >=
+                0.58
+
+                and
+
+                momentum
+                >=
+                -0.0015
+
+                and
+
+                acceleration
+                >=
+                -0.0020
+            )
+
+        # --------------------------------------------------------
+        # CORE
+        # --------------------------------------------------------
+
+        if regime == "CORE":
+
+            return (
+                score
+                >=
+                0.58
+
+                and
+
+                momentum
+                >=
+                -0.0020
+
+                and
+
+                acceleration
+                >=
+                -0.0025
+            )
+
+        # --------------------------------------------------------
+        # HIGH
+        # --------------------------------------------------------
+
+        if regime == "HIGH":
+
+            return (
+                score
+                >=
+                self.layer_b_min_score
+
+                and
+
+                momentum
+                >=
+                0.0020
+
+                and
+
+                acceleration
+                >=
+                0.0
+
+                and
+
+                spread
+                <=
+                0.035
+
+                and
+
+                elapsed
+                >=
+                90.0
+            )
+
+        return False
+
+    # ============================================================
+    # POSITION SIZING
+    # ============================================================
+
+    def _size(
         self,
         regime,
         price,
         score,
-        momentum,
-        current_exposure,
     ):
         """
-        Restrained empirical-shape sizing.
+        V2 sizing function.
 
-        Research shows notional rises strongly with price. The matched sample
-        also showed size increasing during many bursts. V2 uses a conservative
-        curve because trader profitability is unverified and V1 had dangerous
-        concentration.
+        Cheap contracts receive small positions.
+
+        Position size increases through the middle/core regimes.
+
+        HIGH-price contracts are deliberately capped because the
+        previous V1 90-100c behavior generated disproportionate losses.
         """
-        score = self._clamp(score)
-        price = self._clamp(price)
+
+        price = self._clamp(
+            price
+        )
+
+        score = self._clamp(
+            score
+        )
+
+        # --------------------------------------------------------
+        # CHEAP
+        # --------------------------------------------------------
 
         if regime == "CHEAP":
-            # Cheap contracts dominate trade count but only ~12.9% of trader
-            # dollar volume. Keep them small while allowing conviction scaling.
-            base = 0.15 + 0.35 * self._clamp(price / 0.30)
-            scale = 0.40 + 0.60 * score
-            size = base * scale
-            return min(3.00, max(0.15, size))
+
+            # Cheap prices get small notional.
+            #
+            # Typical range:
+            # approximately $0.15-$0.50.
+            #
+            # Stronger conviction can increase the size modestly.
+
+            base = (
+                0.15
+                +
+                0.35
+                *
+                self._clamp(
+                    price
+                    /
+                    0.30
+                )
+            )
+
+            size = (
+                base
+                *
+                (
+                    0.65
+                    +
+                    0.35
+                    * score
+                )
+            )
+
+            return min(
+                1.00,
+                max(
+                    0.15,
+                    size,
+                ),
+            )
+
+        # --------------------------------------------------------
+        # MID
+        # --------------------------------------------------------
 
         if regime == "MID":
-            size = 0.75 + 2.25 * score
-            return min(3.50, max(0.75, size))
+
+            return min(
+                2.50,
+                max(
+                    0.50,
+                    0.50
+                    +
+                    2.00
+                    * score,
+                ),
+            )
+
+        # --------------------------------------------------------
+        # CORE
+        # --------------------------------------------------------
 
         if regime == "CORE":
-            # Preserve the V1 70-90c regime while eliminating flat $5 sizing
-            # at mediocre scores.
-            size = 1.50 + 4.50 * score
-            if score < 0.70:
-                size = min(size, 3.00)
-            return min(6.00, max(1.50, size))
+
+            return min(
+                4.00,
+                max(
+                    1.00,
+                    1.00
+                    +
+                    3.00
+                    * score,
+                ),
+            )
+
+        # --------------------------------------------------------
+        # HIGH
+        # --------------------------------------------------------
 
         if regime == "HIGH":
-            # Explicitly shrink the V1 loss-making 90-100c regime.
-            size = 0.75 + 2.75 * max(0.0, score - 0.82) / 0.18
-            if score < 0.92:
-                size = min(size, 1.50)
-            return min(3.00, max(0.75, size))
+
+            # Never restore V1's flat $5-$10 behavior.
+            return min(
+                2.50,
+                max(
+                    0.50,
+                    0.50
+                    +
+                    2.00
+                    *
+                    max(
+                        0.0,
+                        score
+                        -
+                        0.82,
+                    )
+                    /
+                    0.18,
+                ),
+            )
 
         return 0.0
+
+    # ============================================================
+    # MAIN DECISION ENGINE
+    # ============================================================
 
     def decide(
         self,
         elapsed,
+
         up_ask,
         down_ask,
+
         up_bid,
         down_bid,
+
         up_history,
         down_history,
+
         current_exposure,
         available_cash,
+
         up_depth=0.0,
         down_depth=0.0,
+
         now=None,
+
         asset_exposure=0.0,
-    ) -> Optional[Signal]:
+    ):
+        """
+        Produce a paper-trade Signal or None.
+        """
+
         if now is None:
             now = time.time()
 
-        elapsed = float(elapsed)
-
-        if elapsed < self.start_sec:
-            return None
-
-        # Five-minute markets: final 60 seconds are blocked exactly.
-        if elapsed >= self.stop_sec:
-            return None
-
-        current_exposure = float(current_exposure)
-        asset_exposure = float(asset_exposure)
-        available_cash = float(available_cash)
-
-        remaining_budget = min(
-            self.max_market_exposure - current_exposure,
-            self.max_asset_exposure - asset_exposure,
+        now = float(
+            now
         )
 
-        if remaining_budget <= 0.0 or available_cash <= 0.0:
+        elapsed = float(
+            elapsed
+        )
+
+        # ========================================================
+        # HARD TIMING GATE
+        # ========================================================
+
+        # STOP_TRADING_SECOND=240 on a 300-second market means
+        # the final 60 seconds are completely blocked.
+
+        if (
+            elapsed
+            <
+            self.start_sec
+        ):
             return None
+
+        if (
+            elapsed
+            >=
+            self.stop_sec
+        ):
+            return None
+
+        # ========================================================
+        # RISK INPUTS
+        # ========================================================
+
+        current_exposure = max(
+            0.0,
+            float(
+                current_exposure
+            ),
+        )
+
+        asset_exposure = max(
+            0.0,
+            float(
+                asset_exposure
+            ),
+        )
+
+        available_cash = max(
+            0.0,
+            float(
+                available_cash
+            ),
+        )
+
+        # ========================================================
+        # REMAINING RISK
+        # ========================================================
+
+        remaining = min(
+            self.max_market_exposure
+            -
+            current_exposure,
+
+            self.max_asset_exposure
+            -
+            asset_exposure,
+
+            available_cash,
+        )
+
+        if remaining < 0.10:
+            return None
+
+        # ========================================================
+        # CANDIDATES
+        # ========================================================
 
         candidates = []
 
         observations = (
-            ("Up", up_ask, up_bid, up_depth, up_history),
-            ("Down", down_ask, down_bid, down_depth, down_history),
+            (
+                "Up",
+                up_ask,
+                up_bid,
+                up_depth,
+                up_history,
+            ),
+
+            (
+                "Down",
+                down_ask,
+                down_bid,
+                down_depth,
+                down_history,
+            ),
         )
 
-        for side, ask, bid, depth, history in observations:
+        for (
+            side,
+            ask,
+            bid,
+            depth,
+            history,
+        ) in observations:
+
             features = self._features(
                 ask,
                 bid,
@@ -377,148 +966,191 @@ class ConvergenceStrategy:
             if features is None:
                 continue
 
-            spread, momentum, acceleration = features
-            ask = float(ask)
-            depth = max(0.0, float(depth))
+            (
+                spread,
+                momentum,
+                acceleration,
+            ) = features
 
-            regime = self._regime(ask)
+            ask = float(
+                ask
+            )
+
+            depth = max(
+                0.0,
+                float(
+                    depth
+                ),
+            )
+
+            # ====================================================
+            # REGIME
+            # ====================================================
+
+            regime = self._regime(
+                ask
+            )
+
             if regime is None:
                 continue
 
+            # ====================================================
+            # SCORE
+            # ====================================================
+
             score = self._score(
-                ask=ask,
-                depth=depth,
-                spread=spread,
-                momentum=momentum,
-                acceleration=acceleration,
-                elapsed=elapsed,
+                ask,
+                depth,
+                spread,
+                momentum,
+                acceleration,
+                elapsed,
             )
 
-            if regime == "CHEAP":
-                allowed = self._cheap_signal(
-                    score,
-                    momentum,
-                    acceleration,
-                    spread,
-                    depth,
-                    ask,
-                )
-            elif regime == "MID":
-                allowed = self._mid_signal(
-                    score,
-                    momentum,
-                    acceleration,
-                    spread,
-                    depth,
-                )
-            elif regime == "CORE":
-                allowed = self._core_signal(
-                    score,
-                    momentum,
-                    acceleration,
-                    spread,
-                    depth,
-                )
-            else:
-                allowed = self._high_signal(
-                    score,
-                    momentum,
-                    acceleration,
-                    spread,
-                    depth,
-                    elapsed,
-                )
+            # ====================================================
+            # ENTRY FILTER
+            # ====================================================
 
-            if not allowed:
+            if not self._allowed(
+                regime,
+                score,
+                momentum,
+                acceleration,
+                spread,
+                depth,
+                elapsed,
+            ):
                 continue
 
-            ranking_score = score
+            # ====================================================
+            # RANKING
+            # ====================================================
 
-            # Prevent the previously loss-making high-price regime from
-            # automatically dominating a comparable lower-price opportunity.
-            if regime == "HIGH":
-                ranking_score -= 0.10
+            ranking = score
+
+            # Cheap trades are intentionally given a modest
+            # ranking preference so HIGH-price trades do not
+            # automatically dominate the candidate list.
+
+            if regime == "CHEAP":
+
+                ranking += 0.04
+
             elif regime == "MID":
-                ranking_score += 0.02
+
+                ranking += 0.02
+
+            elif regime == "HIGH":
+
+                ranking -= 0.10
 
             candidates.append(
                 {
                     "side": side,
                     "ask": ask,
-                    "bid": bid,
                     "depth": depth,
                     "regime": regime,
                     "score": score,
-                    "ranking_score": ranking_score,
+                    "ranking": ranking,
                     "momentum": momentum,
                     "acceleration": acceleration,
                     "spread": spread,
                 }
             )
 
+        # ========================================================
+        # NO VALID CANDIDATE
+        # ========================================================
+
         if not candidates:
             return None
 
+        # ========================================================
+        # BEST CANDIDATE
+        # ========================================================
+
         best = max(
             candidates,
-            key=lambda item: item["ranking_score"],
+            key=lambda item:
+                item["ranking"],
         )
 
-        ask = best["ask"]
-        depth = best["depth"]
-        regime = best["regime"]
-        score = best["score"]
+        # ========================================================
+        # SIZE
+        # ========================================================
 
-        target_notional = self._size_for_regime(
-            regime=regime,
-            price=ask,
-            score=score,
-            momentum=best["momentum"],
-            current_exposure=current_exposure,
+        size = self._size(
+            best["regime"],
+            best["ask"],
+            best["score"],
         )
 
-        target_notional = min(
-            target_notional,
+        # Global caps.
+        size = min(
+            size,
             self.max_order,
+            remaining,
         )
-        target_notional = min(
-            target_notional,
-            remaining_budget,
-        )
-        target_notional = min(
-            target_notional,
-            available_cash,
-        )
+
+        # ========================================================
+        # ORDER BOOK DEPTH CAP
+        # ========================================================
 
         depth_cap = (
-            depth
-            * ask
-            * self.max_depth_participation
+            best["depth"]
+            *
+            best["ask"]
+            *
+            self.max_depth_participation
         )
-        target_notional = min(
-            target_notional,
+
+        size = min(
+            size,
             depth_cap,
         )
 
-        if target_notional < 0.10:
+        # ========================================================
+        # MINIMUM SIGNAL SIZE
+        # ========================================================
+
+        if size < 0.10:
             return None
 
+        # ========================================================
+        # RESEARCH REASON
+        # ========================================================
+
+        seconds_left = max(
+            0.0,
+            300.0
+            -
+            elapsed,
+        )
+
         reason = (
-            f"v2_regime={regime} "
-            f"score={score:.3f} "
+            f"V2 "
+            f"regime={best['regime']} "
+            f"score={best['score']:.3f} "
             f"momentum={best['momentum']:+.4f} "
             f"accel={best['acceleration']:+.4f} "
             f"spread={best['spread']:.4f} "
-            f"depth={depth:.2f} "
+            f"depth={best['depth']:.2f} "
             f"elapsed={elapsed:.1f}s "
-            f"remaining={300.0 - elapsed:.1f}s "
-            f"replica=behavioral-hypothesis"
+            f"seconds_left={seconds_left:.1f} "
+            f"independent=true"
         )
+
+        # ========================================================
+        # SIGNAL
+        # ========================================================
 
         return Signal(
             side=best["side"],
-            price=ask,
-            score=score,
-            notional=round(target_notional, 2),
+            price=best["ask"],
+            score=best["score"],
+            notional=round(
+                size,
+                2,
+            ),
             reason=reason,
         )
