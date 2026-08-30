@@ -218,16 +218,23 @@ def market_entry_state(condition, now):
     ]
 
     if not entries:
-        return 0, 0.0
+        return 0, 0.0, None, None
 
     first_ts = min(
         float(t.get("ts", now))
         for t in entries
     )
 
-    return len(entries), max(
-        0.0,
-        float(now) - first_ts,
+    latest = max(
+        entries,
+        key=lambda t: float(t.get("ts", now)),
+    )
+
+    return (
+        len(entries),
+        max(0.0, float(now) - first_ts),
+        latest.get("side"),
+        latest.get("price"),
     )
 
 
@@ -370,7 +377,7 @@ def main():
     p(
         "BOT B | PAPER ONLY | "
         "TRADER BEHAVIORAL REPLICA | "
-        "V5 FOUR-REGIME MODEL"
+        "V6 FOUR-REGIME STATE MODEL"
     )
 
     while True:
@@ -497,7 +504,12 @@ def main():
                 aexp = asset_exposure(m["asset"])
                 total_exp = ledger.total_open_cost()
 
-                entry_count, seconds_since_first = market_entry_state(
+                (
+                    entry_count,
+                    seconds_since_first,
+                    thesis_side,
+                    thesis_price,
+                ) = market_entry_state(
                     m["condition"],
                     now,
                 )
@@ -519,6 +531,8 @@ def main():
                     total_exposure=total_exp,
                     market_entry_count=entry_count,
                     seconds_since_first_entry=seconds_since_first,
+                    thesis_side=thesis_side,
+                    thesis_price=thesis_price,
                 )
 
                 decision_interval = float(
