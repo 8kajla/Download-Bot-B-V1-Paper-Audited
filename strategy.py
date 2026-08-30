@@ -37,7 +37,7 @@ class CapitalFirstStrategy:
     causal trading trigger.
     """
 
-    VERSION = "V13_EVIDENCE_CONSTRAINED"
+    VERSION = "V13_50PCT_SIZE_ONLY"
 
     BANDS: Tuple[Tuple[str, float, float, str], ...] = (
         ("C00_05", 0.00, 0.05, "CHEAP"),
@@ -120,6 +120,7 @@ class CapitalFirstStrategy:
         },
     }
 
+    SIZE_SCALE = 0.50
     HARD_MAX_ORDER = 10.0
     HARD_MAX_MARKET = 100.0
     HARD_MAX_ASSET = 35.0
@@ -190,7 +191,7 @@ class CapitalFirstStrategy:
         else:
             ratio = fourth_plus / first
 
-        return max(0.20, base * ratio)
+        return max(0.10, cls.SIZE_SCALE * max(0.20, base * ratio))
 
     @classmethod
     def entry_target(cls, price, market="BTC", entry_count=0):
