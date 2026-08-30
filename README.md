@@ -1,88 +1,97 @@
-# Polymarket Bot B — Behavioral Replica (Paper Only)
+# Polymarket Bot B — V13 Evidence-Constrained Behavioral Replica
 
-Bot B is derived from the audited V6 paper-trading infrastructure. It does **not** read or copy the reference trader's live activity. It uses observable market microstructure to approximate the behavioral pattern found in the historical research: broad scanning, small incremental entries, stronger sizing as convergence strengthens, liquidity-aware execution, and a hard pre-resolution cutoff.
+Paper-only behavioral research engine. It does **not** place live orders and does not read/copy the reference trader's private activity.
 
-## Safety
+## What changed in V13
 
-- `PAPER_TRADING` must be exactly `true` (case-insensitive).
-- No private key is required.
-- There is no live order-placement code in this version.
+V13 removes several unsupported strategy assumptions from the previous branch:
+
+- No synthetic composite alpha score.
+- No arbitrary `+2.5c`/`35c` momentum or state-reset thresholds.
+- No synthetic "remaining target" capital ladder.
+- No arbitrary 1.02/1.05/1.10 entry multipliers.
+- No 2-second minimum enforced as trader behavior.
+- Entry size is conditioned on price band + observed entry-state medians.
+- Side persistence is retained as a preference because ~89.3% of consecutive same-market pairs stayed on the same side.
+- The measured weakness/strength gradient is used only as an empirical directional likelihood.
+- The final 60-second cutoff remains hard because violations were ~0.04%.
+- Research capture defaults to 1-second snapshots and retains a real time-based 60-second history.
+- Research records explicit trade-candidate vs non-trade observations plus depth imbalance and movement features.
+
+## Evidence boundary
+
+The following remain **UNKNOWN** and are not hardcoded:
+
+- the reference trader's exact private trigger;
+- whether price movement is causal or consequential;
+- exact passive-order placement distance;
+- exact side-reset mechanism;
+- exact market/asset-specific hidden alpha.
 
 ## Railway variables
 
 ```text
 PAPER_TRADING=true
 STARTING_CAPITAL=1000
-MAX_MARKET_EXPOSURE=25
-MAX_ASSET_EXPOSURE=50
+MAX_MARKET_EXPOSURE=100
+MAX_ASSET_EXPOSURE=35
+MAX_TOTAL_EXPOSURE=300
 MAX_ORDER_USD=10
-MIN_PAPER_FILL_USD=0.25
-MIN_ENTRY_PRICE=0.10
-STRONG_ENTRY_PRICE=0.82
-LATE_ENTRY_PRICE=0.90
-MIN_SIGNAL_SCORE=0.50
-MAX_DEPTH_PARTICIPATION=0.25
-START_TRADING_SECOND=90
-AGGRESSIVE_SECOND=180
+MIN_PAPER_FILL_USD=0.10
+
+START_TRADING_SECOND=0
 STOP_TRADING_SECOND=240
-MIN_TRADE_GAP_SECONDS=5
+HARD_CUTOFF_SECONDS=60
+
+MAX_DEPTH_PARTICIPATION=0.25
+MIN_BID_DEPTH=1
+
+MIN_TRADE_GAP_SECONDS=0
 LOOP_SECONDS=1
 REPORT_INTERVAL_SECONDS=60
+
+DECISION_SAMPLE_SECONDS=1
+ORDERBOOK_SAMPLE_SECONDS=1
+
 DATA_DIR=/app/data
-DECISION_SAMPLE_SECONDS=10
-ORDERBOOK_SAMPLE_SECONDS=15
-DECISION_RETENTION_DAYS=7
-ORDERBOOK_RETENTION_DAYS=2
 DATA_MAINTENANCE_SECONDS=3600
+BURST_GAP_SECONDS=18
 FRESH_START=true
 ```
 
-### Fresh-start behavior
+`MIN_TRADE_GAP_SECONDS` is an infrastructure throttle only. It defaults to `0` so it does not distort the observed ~2-second trader cadence.
 
-`FRESH_START=true` clears `/app/data` at process startup and creates a new $STARTING_CAPITAL paper account. Because Railway can restart a container without a new deployment, set it to `true` for a deliberate fresh experiment and then set it to `false` if you want restart recovery to preserve the experiment.
+## Research files
 
-## Strategy
+Permanent:
 
-Bot B scores each side using:
+- `trades.csv`
+- `trade_details.csv`
+- `markets.csv`
+- `resolutions.csv`
+- `settlement_details.csv`
+- `pnl_1min.csv`
+- `regime_1min.csv`
+- `paper_state.json`
 
-- short-term price momentum — 30%
-- acceleration — 18%
-- probability/price confirmation — 18%
-- time-to-resolution — 14%
-- executable depth — 12%
-- spread quality — 8%
+High-volume:
 
-A late high-probability convergence receives a modest additional score boost. Position sizing is incremental: probe orders are about $2, strong signals about $5, and late/very strong signals up to `MAX_ORDER_USD`, subject to market, asset, cash, and visible-depth limits.
+- `decisions.jsonl`
+- `orderbooks.jsonl`
 
-The strategy is a research hypothesis inferred from observed data, not a claim of access to the target trader's private algorithm.
+The research stream records both candidate events and non-trade observations. Book snapshots include bid/ask, bid/ask depth, spread, and depth imbalance. Decision records additionally include 1/3/5/10/30-second movement features, entry state, burst position, and time since the previous paper entry.
 
-## Logging / storage
+## Accounting
 
-Permanent files:
-
-- `trades.csv` — every paper fill and signal context
-- `markets.csv` — resolved-market summaries
-- `resolutions.csv` — resolution and settlement results
-- `pnl_1min.csv` — minute-level equity/P&L
-- `paper_state.json` — paper account state
-
-High-volume files are pruned automatically:
-
-- `decisions.jsonl` — default 7 days
-- `orderbooks.jsonl` — default 2 days
-
-Mount a Railway Volume at `/app/data`.
-
-## Expected logs
-
-```text
-BOT B | PAPER ONLY | BEHAVIORAL REPLICA | NO COPY | FRESH START ENABLED
-MARKETS | active=4 | pending_resolution=0 | assets=BNB,BTC,ETH,SOL
-TRADE PAPER | asset=BTC | side=Up | notional=$2.00 | price=$0.8120 | ...
-MINUTE P&L | equity=$1001.73 | total=+1.73 | realized=+0.00 | unrealized=+1.73 | ...
-RESOLUTION | asset=BTC | ... | pnl=+2.14 | closed=1
-```
+`paper_ledger.py` remains unchanged from the audited branch. Realized P&L is derived from settlement records and reconciled on load/save.
 
 ## Validation
 
-The repository includes unit tests for strategy thresholds, dynamic sizing, depth caps, asset exposure, ledger settlement, market discovery, resolution handling, research logging, and storage initialization.
+Run:
+
+```bash
+pytest -q
+python -m py_compile strategy.py bot.py paper_ledger.py market_discovery.py research_logger.py
+```
+
+The tests cover fine-band boundaries, entry-state sizing, side persistence, empirical trajectory preference, final-minute cutoff, depth limits, resolution accounting, and research logging.
