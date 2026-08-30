@@ -83,7 +83,7 @@ def main():
                     research.record_orderbook(ts=now,market=m,elapsed=elapsed,left=left,up_bid=ub,up_ask=ua,up_depth=ubs,down_bid=db,down_ask=da,down_depth=dbs);ob_last[m["condition"]]=now
                 if not m["accepting_orders"]:continue
                 exp=ledger.exposure(m["condition"]);aexp=asset_exposure(m["asset"]);total=ledger.total_open_cost();ec,sfirst,tside,tprice=market_entry_state(m["condition"],now)
-                sig=strategy.decide(elapsed,ua,da,ub,db,h["Up"],h["Down"],exp,ledger.cash,up_depth=ubs,down_depth=dbs,now=now,asset_exposure=aexp,total_exposure=total,market_entry_count=ec,seconds_since_first_entry=sfirst,thesis_side=tside,thesis_price=tprice)
+                sig=strategy.decide(elapsed,ua,da,ub,db,h["Up"],h["Down"],exp,ledger.cash,up_depth=ubs,down_depth=dbs,now=now,asset_exposure=aexp,total_exposure=total,market_entry_count=ec,seconds_since_first_entry=sfirst,thesis_side=tside,thesis_price=tprice,asset=m["asset"],market=m["asset"])
                 interval=float(os.getenv("DECISION_SAMPLE_SECONDS","10"))
                 if sig is not None or now-decision_last.get(m["condition"],0)>=interval:
                     research.record_decision(ts=now,market=m,elapsed=elapsed,left=left,up_bid=ub,up_ask=ua,up_depth=ubs,down_bid=db,down_ask=da,down_depth=dbs,signal=sig,exposure=exp,cash=ledger.cash);decision_last[m["condition"]]=now
@@ -92,9 +92,9 @@ def main():
                 depth_cap=max(0,float(bid_size)*float(sig.price)*strategy.max_depth_participation);rem_market=max(0,strategy.max_market_exposure-ledger.exposure(m["condition"]));rem_asset=max(0,strategy.max_asset_exposure-asset_exposure(m["asset"]));rem_total=max(0,strategy.max_total_exposure-ledger.total_open_cost())
                 notion=min(sig.notional,strategy.max_order,depth_cap,rem_market,rem_asset,rem_total,max(0,ledger.cash))
                 if notion<float(os.getenv("MIN_PAPER_FILL_USD","0.10")):continue
-                meta={"slug":m["slug"],"asset":m["asset"],"start_ts":m["start_ts"],"end_ts":m["end_ts"],"market_id":m["id"],"up_token":m["up"],"down_token":m["down"],"model_version":"V8_CAPITAL_FIRST","entry_count_before":ec,"seconds_since_first_entry":sfirst,"regime":strategy._regime(sig.price),"execution_mode":"PASSIVE_BID_PROXY","target_capital":strategy.desired_capital(sig.price),"bid_size":bid_size}
+                meta={"slug":m["slug"],"asset":m["asset"],"start_ts":m["start_ts"],"end_ts":m["end_ts"],"market_id":m["id"],"up_token":m["up"],"down_token":m["down"],"model_version":"V10_HIERARCHICAL_MARKET_SEGMENT","entry_count_before":ec,"seconds_since_first_entry":sfirst,"regime":strategy.fine_band(sig.price)[1], "fine_band":strategy.fine_band(sig.price)[0],"execution_mode":"PASSIVE_BID_PROXY","target_capital":strategy.desired_capital(sig.price),"bid_size":bid_size}
                 t=ledger.buy(m["condition"],token,m["market"],sig.side,sig.price,notion,now,meta);pending[m["condition"]]=m;last_trade[m["condition"]]=now
-                p(f"TRADE PAPER | V8 CAPITAL | asset={m['asset']} | side={sig.side} | notional=${notion:.2f} | bid=${sig.price:.4f} | target=${meta['target_capital']:.2f} | entry_count={ec} | {sig.reason}")
+                p(f"TRADE PAPER | V10 HIERARCHICAL | asset={m['asset']} | side={sig.side} | notional=${notion:.2f} | bid=${sig.price:.4f} | target=${meta['target_capital']:.2f} | entry_count={ec} | {sig.reason}")
                 research.record_trade(ts=now,market=m,elapsed=elapsed,left=left,up_bid=ub,up_ask=ua,up_depth=ubs,down_bid=db,down_ask=da,down_depth=dbs,trade=t,score=sig.score,momentum=None,reason=sig.reason,cash_after=ledger.cash,exposure_after=ledger.exposure(m["condition"]));ledger.save()
             report(books)
             if now-last_maintenance>=float(os.getenv("DATA_MAINTENANCE_SECONDS","3600")):research.maintenance();last_maintenance=now
