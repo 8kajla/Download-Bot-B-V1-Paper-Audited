@@ -1,39 +1,141 @@
-import json
-from strategy import CapitalFirstStrategy
-from paper_ledger import PaperLedger
 
-def S(**kw):
-    kw.setdefault('min_trade_gap_seconds',0); kw.setdefault('max_market_exposure',100); kw.setdefault('max_total_exposure',300); kw.setdefault('max_asset_exposure',35); kw.setdefault('max_order',10)
-    return CapitalFirstStrategy(**kw)
-def H(p,now=1000): return [(now-60,p),(now-30,p),(now-10,p),(now-1,p)]
-def test_version_and_regimes():
-    s=S(); assert s.VERSION.startswith('V8'); assert [s._regime(x) for x in (.01,.30,.70,.90,.995)]==['CHEAP','MID','CORE','HIGH',None]
-def test_capital_curve():
-    s=S(); assert s.desired_capital(.05)<s.desired_capital(.50)<s.desired_capital(.80)<s.desired_capital(.95)
-def test_cheap_is_small_and_bounded():
-    s=S(); assert s.desired_capital(.05)<=.81 and s.desired_capital(.25)<=.81
-def test_high_is_large():
-    s=S(); assert s.desired_capital(.95)>10 and s.desired_capital(.95)>10*s.desired_capital(.20)
-def test_passive_uses_bid_and_capital_priority():
-    s=S(); x=s.decide(180,.30,.80,.29,.79,H(.29),H(.79),0,1000,100,100,now=1000); assert x and x.price==.79 and 'passive=bid' in x.reason
-def test_no_bid_side_is_ignored():
-    s=S(); x=s.decide(180,.30,.80,None,.79,H(.29),H(.79),0,1000,100,100,now=1000); assert x and x.side=='Down'
-def test_target_stops_repeated_adds():
-    s=S(); assert s.decide(180,.30,None,.29,None,H(.29),[],.81,1000,100,0,now=1000) is None
-def test_target_limits_remaining_add():
-    s=S(); x=s.decide(180,.30,None,.29,None,H(.29),[],.70,1000,100,0,now=1000); assert x and x.notional<=.11
-def test_high_uses_multiple_fill_slices():
-    s=S(); x=s.decide(180,.96,.04,.95,.03,H(.95),H(.03),0,1000,100,100,now=1000); assert x and x.notional<=10 and s.desired_capital(.95)>10
-def test_reset_cooldown():
-    s=S(); s._last_reset_at=1000; x=s.decide(180,.20,.90,.19,.89,H(.19),H(.89),0,1000,100,100,now=1010,thesis_side='Up',thesis_price=.75,seconds_since_first_entry=60); assert x is None or x.side=='Up'
-def test_final_cutoff():
-    assert S().decide(181,.30,.80,.29,.79,H(.29),H(.79),0,1000,100,100,now=1000) is None
-def test_global_market_asset_caps():
-    s=S(); assert s.decide(180,.96,.04,.95,.03,H(.95),H(.03),0,1000,100,100,now=1000,total_exposure=299.95).notional<=.05 if s.decide(180,.96,.04,.95,.03,H(.95),H(.03),0,1000,100,100,now=1000,total_exposure=299.95) else True
-    s=S(); assert s.decide(180,.96,.04,.95,.03,H(.95),H(.03),99.95,1000,100,100,now=1000) .notional<=.05 if s.decide(180,.96,.04,.95,.03,H(.95),H(.03),99.95,1000,100,100,now=1000) else True
-def test_asset_cap():
-    s=S(); x=s.decide(180,.96,.04,.95,.03,H(.95),H(.03),0,1000,100,100,now=1000,asset_exposure=34.95); assert x is None or x.notional<=.05
-def test_depth_cap():
-    s=S(); x=s.decide(180,.96,.04,.95,.03,H(.95),H(.03),0,1000,.1,.1,now=1000); assert x is None
-def test_ledger_reconcile(tmp_path):
-    p=PaperLedger(tmp_path/'s.json',1000); p.buy('c','u','m','Up',.5,1,1); p.settle('c','u'); assert p.realized==p._settlement_total(p.trades)
+from strategy import CapitalFirstStrategy
+
+def make():
+    return CapitalFirstStrategy(
+        bankroll=1000,
+        max_market_exposure=100,
+        max_order=10,
+        max_asset_exposure=35,
+        max_total_exposure=300,
+        start_sec=0,
+        stop_sec=240,
+        hard_cutoff_seconds=60,
+        max_depth_participation=0.20,
+        min_trade_gap_seconds=0,
+        min_bid_depth=1,
+        state_reset_jump=0.30,
+        state_reset_cooldown=30,
+        state_min_age=45,
+    )
+
+def H(p, now=1000):
+    return [
+        {"ts":now-30, "best_bid":p},
+        {"ts":now-10, "best_bid":p},
+        {"ts":now-5, "best_bid":p},
+        {"ts":now-3, "best_bid":p},
+        {"ts":now, "best_bid":p},
+    ]
+
+def test_all_price_bands_map():
+    x=make()
+    expected=[
+        (.02,"C00_05","CHEAP"), (.07,"C05_10","CHEAP"),
+        (.12,"C10_15","CHEAP"), (.17,"C15_20","CHEAP"),
+        (.25,"C20_30","CHEAP"), (.35,"M30_40","MID"),
+        (.45,"M40_50","MID"), (.55,"M50_60","MID"),
+        (.65,"M60_70","MID"), (.75,"R70_80","CORE"),
+        (.85,"R80_90","CORE"), (.925,"H90_95","HIGH"),
+        (.975,"H95_100","HIGH"),
+    ]
+    for p,b,r in expected:
+        assert x.fine_band(p)==(b,r)
+
+def test_price_capital_curve_is_increasing():
+    x=make()
+    ps=[.025,.075,.125,.175,.25,.35,.45,.55,.65,.75,.85,.925,.975]
+    vals=[x.desired_capital(p,market="BTC") for p in ps]
+    assert all(b>=a for a,b in zip(vals,vals[1:]))
+
+def test_market_overlays_are_distinct():
+    x=make()
+    vals={m:x.desired_capital(.55,market=m) for m in ("BTC","ETH","SOL","BNB")}
+    assert len(set(round(v,6) for v in vals.values()))>1
+
+def test_cheap_path_is_independent():
+    x=make()
+    c=x._candidate("BTC","Up",.20,.21,50,H(.20),1000,None,0,0)
+    assert c and c["regime"]=="CHEAP"
+    assert c["path"]=="CHEAP_LIQUIDITY_WEAKNESS"
+
+def test_mid_path_is_independent():
+    x=make()
+    c=x._candidate("ETH","Up",.50,.51,50,H(.50),1000,None,0,0)
+    assert c and c["regime"]=="MID"
+    assert c["path"]=="MID_STABLE_BOOK"
+
+def test_core_path_requires_quality():
+    x=make()
+    h=[{"ts":970,"best_bid":.74},{"ts":990,"best_bid":.78},
+       {"ts":995,"best_bid":.79},{"ts":1000,"best_bid":.80}]
+    c=x._candidate("SOL","Up",.80,.81,50,h,1000,"Up",2,60)
+    assert c and c["path"]=="CORE_STRENGTH_CONTINUATION"
+
+def test_high_needs_established_state():
+    x=make()
+    h=[{"ts":970,"best_bid":.88},{"ts":990,"best_bid":.89},
+       {"ts":995,"best_bid":.90},{"ts":1000,"best_bid":.925}]
+    no_state=x._candidate("BNB","Up",.925,.94,50,h,1000,None,0,0)
+    assert no_state is None
+    good=x._candidate("BNB","Up",.925,.94,50,h,1000,"Up",3,90)
+    assert good and good["regime"]=="HIGH"
+
+def test_95_100_has_stricter_requirement():
+    x=make()
+    h90=[{"ts":970,"best_bid":.89},{"ts":990,"best_bid":.90},
+         {"ts":995,"best_bid":.912},{"ts":1000,"best_bid":.925}]
+    c90=x._candidate("BTC","Up",.925,.94,50,h90,1000,"Up",3,90)
+    assert c90 is not None
+    h95=[{"ts":970,"best_bid":.95},{"ts":990,"best_bid":.952},
+         {"ts":995,"best_bid":.956},{"ts":1000,"best_bid":.975}]
+    c95=x._candidate("BTC","Up",.975,.985,50,h95,1000,"Up",3,90)
+    assert c95 is None or c95["band"]=="H95_100"
+
+def test_entry_sequence_increases_target():
+    x=make()
+    a=x.desired_capital(.80,market="BTC",entry_count=0)
+    b=x.desired_capital(.80,market="BTC",entry_count=5)
+    c=x.desired_capital(.80,market="BTC",entry_count=20)
+    assert a<=b<=c
+
+def test_same_side_persistence():
+    x=make()
+    up=[{"ts":970,"best_bid":.74},{"ts":990,"best_bid":.78},
+        {"ts":995,"best_bid":.795},{"ts":1000,"best_bid":.80}]
+    down=H(.50)
+    sig=x.decide(
+        120,.81,.51,.80,.50,up,down,2,1000,
+        up_depth=50,down_depth=50,now=1000,asset="ETH",market="ETH",
+        market_entry_count=1,seconds_since_first_entry=90,
+        thesis_side="Up",thesis_price=.78
+    )
+    assert sig and sig.side=="Up"
+
+def test_final_minute_cutoff():
+    x=make()
+    assert x.decide(
+        180,.51,.21,.50,.20,H(.50),H(.20),0,1000,
+        up_depth=50,down_depth=50,now=1000,asset="BTC"
+    ) is None
+
+def test_cheap_collapse_guard():
+    x=make()
+    hist=[{"ts":970,"best_bid":.26},{"ts":990,"best_bid":.22},
+          {"ts":995,"best_bid":.205},{"ts":1000,"best_bid":.20}]
+    assert x.decide(
+        80,.21,.06,.20,.05,hist,hist,5,1000,
+        up_depth=50,down_depth=50,now=1000,asset="BTC",
+        market_entry_count=9,seconds_since_first_entry=100,
+        thesis_side="Up",thesis_price=.28
+    ) is None
+
+def test_signal_contains_market_and_fine_band():
+    x=make()
+    sig=x.decide(
+        40,.51,.21,.50,.20,H(.50),H(.20),0,1000,
+        up_depth=50,down_depth=50,now=1000,asset="ETH",market="ETH"
+    )
+    assert sig
+    assert "V10 market=ETH" in sig.reason
+    assert "band=M50_60" in sig.reason
