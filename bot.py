@@ -239,7 +239,7 @@ strategy = ConvergenceStrategy(
     max_total_exposure=float(
         os.getenv(
             "MAX_TOTAL_EXPOSURE",
-            "60",
+            "100",
         )
     ),
 )
