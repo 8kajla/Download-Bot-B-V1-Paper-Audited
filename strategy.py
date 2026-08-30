@@ -13,22 +13,28 @@ class Signal:
 
 
 class ConvergenceStrategy:
-    """BOT B V5 — four-regime, starter/add-on research model.
+    """BOT B V6 — regime-specific behavioral model.
 
-    Evidence incorporated from the synchronized trader dataset:
-      * CHEAP is high-frequency, small-size, gap-tolerant and often later.
-      * MID is moderate-frequency with comparatively stable ~$2 sizing.
-      * CORE is less frequent and larger, with stronger confirmation.
-      * HIGH is rare, late and very capital-intensive.
-      * Repeated entries are a central behavior; first entries are generally
-        smaller than later entries, especially in CORE/HIGH.
+    Confirmed observations incorporated:
+      * BUY-only behavior in the available trader history.
+      * ~2s median intertrade cadence with rapid bursts.
+      * ~89% same-side continuation with occasional resets.
+      * CHEAP entries disproportionately occur while price is falling.
+      * CORE/HIGH entries disproportionately occur while price is rising.
+      * Entry size increases with entry count, with the strongest effect in
+        CORE/HIGH; HIGH starts smaller and then scales sharply.
+      * Sizing is smooth/continuous; clean discrete share tiers were not found.
+      * No hard-coded asset-specific distribution is used because the latest
+        asset x regime estimates were not stable enough to justify it.
+      * Final 60 seconds remain a hard no-entry zone.
 
-    Important:
-      This is a behavioral research model, not a claim of the trader's
-      private/hidden trigger.
+    Unknowns intentionally NOT hard-coded as facts:
+      * the trader's true pre-trade trigger,
+      * whether his fills come from a static/relative resting ladder,
+      * his exact order-book inputs.
     """
 
-    VERSION = "V5"
+    VERSION = "V6"
 
     CHEAP_MIN, CHEAP_MAX = 0.01, 0.30
     MID_MIN, MID_MAX = 0.30, 0.70
@@ -40,14 +46,6 @@ class ConvergenceStrategy:
     HARD_MAX_TOTAL_EXPOSURE = 300.0
     HARD_MAX_ASSET_EXPOSURE = 35.0
     HARD_CUTOFF_SECONDS = 60.0
-
-    # Historical reference only; never a hard quota.
-    TARGETS = {
-        "CHEAP": 0.476,
-        "MID": 0.347,
-        "CORE": 0.105,
-        "HIGH": 0.072,
-    }
 
     def __init__(
         self,
@@ -107,13 +105,9 @@ class ConvergenceStrategy:
             0.25,
             max(0.01, float(max_depth_participation)),
         )
-        self.max_asset_exposure = min(
-            self.max_asset_exposure,
-            float(max_asset_exposure),
-        )
 
         self.hard_cutoff_seconds = max(
-            60.0,
+            self.HARD_CUTOFF_SECONDS,
             float(hard_cutoff_seconds),
         )
         self.min_trade_gap_seconds = max(
@@ -121,7 +115,7 @@ class ConvergenceStrategy:
             float(min_trade_gap_seconds),
         )
 
-        # Keep these for compatibility with the existing environment.
+        # Kept for Railway/backward compatibility.
         self.layer_a_base_notional = max(
             0.10,
             float(layer_a_base_notional),
@@ -135,10 +129,7 @@ class ConvergenceStrategy:
         )
         self.layer_b_base_notional = min(
             self.max_order,
-            max(
-                0.10,
-                float(layer_b_base_notional),
-            ),
+            max(0.10, float(layer_b_base_notional)),
         )
         self.layer_b_max_notional = min(
             self.max_order,
@@ -151,12 +142,11 @@ class ConvergenceStrategy:
         self._last_trade_at = None
 
     @staticmethod
-    def _clamp(value, lo=0.0, hi=1.0):
-        return max(lo, min(hi, float(value)))
+    def _clamp(value, low=0.0, high=1.0):
+        return max(low, min(high, float(value)))
 
     def _regime(self, price):
         p = float(price)
-
         if self.CHEAP_MIN <= p < self.CHEAP_MAX:
             return "CHEAP"
         if self.MID_MIN <= p < self.MID_MAX:
@@ -165,7 +155,6 @@ class ConvergenceStrategy:
             return "CORE"
         if self.HIGH_MIN <= p < self.HIGH_MAX:
             return "HIGH"
-
         return None
 
     @staticmethod
@@ -192,30 +181,35 @@ class ConvergenceStrategy:
             else 0.02
         )
 
-        pts = []
+        points = []
         for item in history or []:
             try:
                 t, p = float(item[0]), float(item[1])
                 if 0.0 < p < 1.0:
-                    pts.append((t, p))
+                    points.append((t, p))
             except (TypeError, ValueError, IndexError):
                 continue
 
-        if not pts:
+        points.sort()
+
+        if not points:
             return spread, 0.0, 0.0
 
-        def nearest(seconds):
+        def nearest(seconds_ago):
             return min(
-                pts,
-                key=lambda item: abs((now - item[0]) - seconds),
+                points,
+                key=lambda item: abs(
+                    (now - item[0]) - seconds_ago
+                ),
             )[1]
 
-        p30 = nearest(30)
-        p10 = nearest(10)
+        p30 = nearest(30.0)
+        p10 = nearest(10.0)
 
         momentum = ask - p30
         acceleration = (
-            (ask - p10) - (p10 - p30)
+            (ask - p10)
+            - (p10 - p30)
         )
 
         return spread, momentum, acceleration
@@ -229,13 +223,15 @@ class ConvergenceStrategy:
         acceleration,
         elapsed,
     ):
-        ms = self._clamp(0.5 + momentum * 8.0)
-        acs = self._clamp(0.5 + acceleration * 10.0)
-
+        momentum_score = self._clamp(
+            0.5 + momentum * 8.0
+        )
+        acceleration_score = self._clamp(
+            0.5 + acceleration * 10.0
+        )
         extremeness = self._clamp(
             abs(ask - 0.50) / 0.50
         )
-
         time_score = self._clamp(
             (elapsed - self.start_sec)
             / max(
@@ -243,7 +239,6 @@ class ConvergenceStrategy:
                 self.stop_sec - self.start_sec,
             )
         )
-
         spread_score = self._clamp(
             1.0
             - max(0.0, spread - 0.01)
@@ -254,79 +249,90 @@ class ConvergenceStrategy:
             max(0.0, float(depth))
             * max(ask, 0.01)
         )
-
         depth_score = self._clamp(
             depth_dollars / 20.0
         )
 
         return self._clamp(
-            0.29 * ms
-            + 0.18 * acs
-            + 0.16 * extremeness
-            + 0.15 * time_score
-            + 0.12 * depth_score
-            + 0.10 * spread_score
+            0.25 * momentum_score
+            + 0.16 * acceleration_score
+            + 0.18 * extremeness
+            + 0.13 * time_score
+            + 0.14 * depth_score
+            + 0.14 * spread_score
         )
 
-    def _regime_score(
+    def _regime_trigger_score(
         self,
         regime,
         base_score,
         momentum,
         acceleration,
-        spread,
         elapsed,
     ):
-        """Regime-specific score shaping.
-
-        This is intentionally separate by regime rather than one universal
-        scoring policy.
-        """
+        """Apply the observed weakness/strength gradient."""
         score = base_score
 
         if regime == "CHEAP":
-            # Cheap is driven more by extremeness and persistence than by
-            # requiring positive momentum.
-            score += 0.04 * self._clamp(
-                -momentum / 0.05
+            # Reward weak/falling price behavior, but permit flat prices.
+            weakness = self._clamp(
+                (-momentum + 0.002) / 0.04,
+                0.0,
+                1.0,
             )
-            score += 0.03 * self._clamp(
-                -acceleration / 0.05
+            score += 0.10 * weakness
+
+            persistence = self._clamp(
+                (-acceleration + 0.002) / 0.04,
+                0.0,
+                1.0,
             )
+            score += 0.05 * persistence
 
             if elapsed >= 120:
-                score += 0.03
+                score += 0.025
 
         elif regime == "MID":
-            # MID retains a modest trend component.
-            score += 0.04 * self._clamp(
-                momentum / 0.05,
-                -1,
-                1,
+            # MID is deliberately centered around a neutral-to-mildly
+            # directional state.
+            neutral = 1.0 - self._clamp(
+                abs(momentum - 0.002) / 0.035
             )
+            score += 0.05 * neutral
 
         elif regime == "CORE":
-            # CORE requires much stronger directional confirmation.
-            score += 0.08 * self._clamp(
-                momentum / 0.04,
-                -1,
-                1,
+            strength = self._clamp(
+                (momentum - 0.002) / 0.035,
+                0.0,
+                1.0,
             )
-            score += 0.06 * self._clamp(
-                acceleration / 0.03,
-                -1,
-                1,
+            score += 0.10 * strength
+
+            accel = self._clamp(
+                (acceleration - 0.001) / 0.025,
+                0.0,
+                1.0,
             )
+            score += 0.06 * accel
 
         elif regime == "HIGH":
-            # HIGH behaves more like late confirmation.
-            score += 0.10 * self._clamp(
-                momentum / 0.03,
-                -1,
-                1,
+            strength = self._clamp(
+                (momentum - 0.003) / 0.025,
+                0.0,
+                1.0,
             )
-            if elapsed >= 165:
-                score += 0.05
+            score += 0.13 * strength
+
+            accel = self._clamp(
+                (acceleration + 0.001) / 0.02,
+                0.0,
+                1.0,
+            )
+            score += 0.06 * accel
+
+            # HIGH executions are materially later than other regimes.
+            if elapsed >= 150:
+                score += 0.07
 
         return self._clamp(score)
 
@@ -339,7 +345,6 @@ class ConvergenceStrategy:
         spread,
         depth,
         elapsed,
-        entry_count,
     ):
         if depth <= 0:
             return False
@@ -349,35 +354,43 @@ class ConvergenceStrategy:
 
         if regime == "CHEAP":
             return (
-                score >= 0.49
-                and momentum >= -0.015
-                and acceleration >= -0.018
-                and spread <= 0.05
+                score >= max(
+                    self.layer_a_min_score,
+                    0.49,
+                )
+                and momentum <= 0.012
+                and acceleration <= 0.018
             )
 
         if regime == "MID":
             return (
-                score >= 0.60
-                and momentum >= -0.004
-                and acceleration >= -0.008
+                score >= max(
+                    self.min_score,
+                    0.63,
+                )
+                and momentum >= -0.010
+                and momentum <= 0.050
+                and acceleration >= -0.014
+                and acceleration <= 0.018
                 and spread <= 0.045
             )
 
         if regime == "CORE":
             return (
-                score >= 0.77
-                and momentum >= 0.008
-                and acceleration >= 0.002
-                and spread <= 0.03
+                score >= 0.72
+                and momentum >= 0.004
+                and spread <= 0.035
             )
 
         if regime == "HIGH":
             return (
-                score >= 0.83
-                and momentum >= 0.003
-                and acceleration >= -0.001
+                score >= max(
+                    self.layer_b_min_score,
+                    0.83,
+                )
+                and momentum >= 0.004
+                and elapsed >= 120
                 and spread <= 0.03
-                and elapsed >= 90
             )
 
         return False
@@ -390,129 +403,143 @@ class ConvergenceStrategy:
         entry_count=0,
         elapsed_since_first_entry=0.0,
     ):
-        """Piecewise sizing curve with smaller starters and larger add-ons."""
+        """Smooth, regime-specific size curve calibrated to observed medians.
+
+        Entry tiers are continuous rather than hard share buckets.
+        """
         p = self._clamp(price, 0.01, 0.995)
         s = self._clamp(score)
-        entry_count = max(0, int(entry_count))
+        n = max(0, int(entry_count))
         age = max(
             0.0,
             float(elapsed_since_first_entry),
         )
 
-        starter = entry_count == 0
+        # Smooth entry-count multiplier.
+        if n <= 0:
+            entry_factor = 1.00
+        elif n <= 2:
+            entry_factor = 1.12
+        elif n <= 4:
+            entry_factor = 1.24
+        else:
+            entry_factor = 1.30
 
         if regime == "CHEAP":
             x = self._clamp(
                 (p - 0.01) / 0.29
             )
-            starter_size = (
-                0.20
-                + 0.55
+            # At 20c, starter ~0.40 and 4th+ ~0.61.
+            base = (
+                0.27
+                + 0.24
                 * (x ** 0.65)
-                * (0.80 + 0.20 * s)
+                * (0.85 + 0.15 * s)
+            )
+            size = (
+                base
+                * (0.92 + 0.18 * entry_factor)
             )
 
-            addon_size = (
-                0.30
-                + 1.15
-                * (x ** 0.55)
-                * (0.80 + 0.20 * s)
-            )
-
-            return min(
-                self.max_order,
-                starter_size
-                if starter
-                else addon_size,
-            )
-
-        if regime == "MID":
+        elif regime == "MID":
             x = self._clamp(
                 (p - 0.30) / 0.40
             )
-
-            starter_size = (
-                0.70
-                + 1.40
+            # Around 50c, approx $1.9-$2.1 across entries.
+            base = (
+                1.35
+                + 0.60
                 * (x ** 0.70)
-                * (0.82 + 0.18 * s)
+                * (0.85 + 0.15 * s)
+            )
+            size = base * (
+                0.92
+                + 0.08 * entry_factor
             )
 
-            addon_size = (
-                1.10
-                + 2.30
-                * (x ** 0.65)
-                * (0.82 + 0.18 * s)
-            )
-
-            return min(
-                self.max_order,
-                starter_size
-                if starter
-                else addon_size,
-            )
-
-        if regime == "CORE":
+        elif regime == "CORE":
             x = self._clamp(
                 (p - 0.70) / 0.20
             )
-
-            starter_size = (
-                1.75
-                + 2.00
+            # Around 80c, approx $4.3 starter and ~$5 after several entries.
+            base = (
+                3.45
+                + 1.05
                 * (x ** 0.60)
                 * (0.85 + 0.15 * s)
             )
-
-            addon_size = (
-                3.00
-                + 3.60
-                * (x ** 0.55)
-                * (0.85 + 0.15 * s)
+            size = base * (
+                0.88
+                + 0.12 * entry_factor
             )
 
-            return min(
-                self.max_order,
-                6.50,
-                starter_size
-                if starter
-                else addon_size,
-            )
-
-        if regime == "HIGH":
+        elif regime == "HIGH":
             x = self._clamp(
                 (p - 0.90) / 0.095
             )
-
-            # The observed trader has a very large late HIGH allocation.
-            # We cannot exceed our $10 research order ceiling.
-            starter_size = (
-                2.50
-                + 3.50
-                * (x ** 0.55)
+            # Around 95c, starter ~5.7; later entries hit the $10 cap.
+            starter = (
+                4.20
+                + 1.55
+                * (x ** 0.50)
                 * (0.85 + 0.15 * s)
             )
+            if n == 0:
+                size = starter
+            else:
+                size = (
+                    starter
+                    + 5.75
+                    * self._clamp(
+                        n / 4.0,
+                        0.0,
+                        1.0,
+                    )
+                    + (
+                        0.40
+                        if age >= 90
+                        else 0.0
+                    )
+                )
 
-            addon_size = (
-                5.00
-                + 5.00
-                * (x ** 0.45)
-                * (0.90 + 0.10 * s)
-            )
+        else:
+            return 0.0
 
-            # Later add-ons can be slightly larger, matching the observed
-            # tendency for late HIGH entries to concentrate capital.
-            if not starter and age >= 90:
-                addon_size *= 1.05
+        return min(
+            self.max_order,
+            max(0.10, size),
+        )
 
-            return min(
-                self.max_order,
-                starter_size
-                if starter
-                else addon_size,
-            )
+    @staticmethod
+    def _reset_allowed(
+        thesis_side,
+        thesis_price,
+        candidate_side,
+        candidate_price,
+        current_elapsed,
+    ):
+        """Conservative reset rule reflecting the observed ~10% flips.
 
-        return 0.0
+        A side flip is allowed only after a large probability-state move.
+        This is an explicit hypothesis, not a claimed reconstruction of the
+        trader's private trigger.
+        """
+        if not thesis_side or thesis_side == candidate_side:
+            return True
+
+        if thesis_price is None:
+            return False
+
+        jump = abs(
+            float(candidate_price)
+            - float(thesis_price)
+        )
+
+        # Very large regime/state transitions can justify a directional reset.
+        return (
+            jump >= 0.45
+            and current_elapsed >= 60.0
+        )
 
     def decide(
         self,
@@ -532,6 +559,8 @@ class ConvergenceStrategy:
         total_exposure=0.0,
         market_entry_count=0,
         seconds_since_first_entry=0.0,
+        thesis_side=None,
+        thesis_price=None,
     ):
         now = (
             time.time()
@@ -547,7 +576,7 @@ class ConvergenceStrategy:
             return None
 
         if (
-            max(0.0, 300.0 - elapsed)
+            300.0 - elapsed
             <= self.hard_cutoff_seconds
         ):
             return None
@@ -602,11 +631,10 @@ class ConvergenceStrategy:
                 continue
 
             spread, momentum, acceleration = features
-
             ask = float(ask)
             depth = max(0.0, float(depth))
-            regime = self._regime(ask)
 
+            regime = self._regime(ask)
             if regime is None:
                 continue
 
@@ -618,13 +646,11 @@ class ConvergenceStrategy:
                 acceleration,
                 elapsed,
             )
-
-            score = self._regime_score(
+            score = self._regime_trigger_score(
                 regime,
                 base_score,
                 momentum,
                 acceleration,
-                spread,
                 elapsed,
             )
 
@@ -636,30 +662,58 @@ class ConvergenceStrategy:
                 spread,
                 depth,
                 elapsed,
-                market_entry_count,
             ):
                 continue
 
-            # Small soft prior to prevent CORE from dominating the selected
-            # candidate when multiple regimes are simultaneously eligible.
-            bias = {
-                "CHEAP": 0.05,
-                "MID": 0.03,
-                "CORE": -0.06,
-                "HIGH": -0.01,
+            if not self._reset_allowed(
+                thesis_side,
+                thesis_price,
+                side,
+                ask,
+                elapsed,
+            ):
+                continue
+
+            # Candidate ranking reflects the same observed monotonic
+            # weakness→strength gradient without imposing a fixed quota.
+            direction_bias = {
+                "CHEAP": -momentum * 1.25,
+                "MID": -abs(momentum - 0.002) * 0.25,
+                "CORE": momentum * 1.25,
+                "HIGH": momentum * 1.60,
             }[regime]
 
-            candidates.append({
-                "side": side,
-                "ask": ask,
-                "depth": depth,
-                "regime": regime,
-                "score": score,
-                "ranking": score + bias,
-                "momentum": momentum,
-                "acceleration": acceleration,
-                "spread": spread,
-            })
+            reset_bonus = 0.0
+            if (
+                thesis_side
+                and thesis_side != side
+                and self._reset_allowed(
+                    thesis_side,
+                    thesis_price,
+                    side,
+                    ask,
+                    elapsed,
+                )
+            ):
+                reset_bonus = 0.05
+
+            candidates.append(
+                {
+                    "side": side,
+                    "ask": ask,
+                    "depth": depth,
+                    "regime": regime,
+                    "score": score,
+                    "ranking": (
+                        score
+                        + direction_bias
+                        + reset_bonus
+                    ),
+                    "momentum": momentum,
+                    "acceleration": acceleration,
+                    "spread": spread,
+                }
+            )
 
         if not candidates:
             return None
@@ -706,10 +760,17 @@ class ConvergenceStrategy:
 
         self._last_trade_at = now
 
-        mode = "STARTER" if market_entry_count == 0 else "ADD_ON"
+        mode = (
+            "STARTER"
+            if market_entry_count == 0
+            else "ADD_ON"
+        )
+
+        if thesis_side and thesis_side != best["side"]:
+            mode = "RESET"
 
         reason = (
-            f"V5 regime={best['regime']} "
+            f"V6 regime={best['regime']} "
             f"mode={mode} "
             f"entry_count={int(market_entry_count)} "
             f"score={best['score']:.3f} "
@@ -722,7 +783,7 @@ class ConvergenceStrategy:
             f"seconds_left={300.0 - elapsed:.1f} "
             f"global_exposure={float(total_exposure):.2f} "
             f"global_cap={self.max_total_exposure:.2f} "
-            f"independent=true"
+            f"independent=false"
         )
 
         return Signal(
