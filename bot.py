@@ -1,4 +1,3 @@
-
 import os
 import time
 import traceback
@@ -23,19 +22,12 @@ log = logging.getLogger("bot")
 
 
 def prepare_fresh_data_dir():
-    """
-    Clear DATA_DIR on every deployment when FRESH_START=true.
-    """
-
     data_dir = Path(
         os.getenv("DATA_DIR", "/app/data")
     ).expanduser()
 
     fresh = (
-        os.getenv(
-            "FRESH_START",
-            "true",
-        )
+        os.getenv("FRESH_START", "true")
         .strip()
         .lower()
         in ("1", "true", "yes", "on")
@@ -61,7 +53,6 @@ def prepare_fresh_data_dir():
         print(
             f"DATA | fresh_start=ON | cleared={data_dir}"
         )
-
     else:
         data_dir.mkdir(
             parents=True,
@@ -73,12 +64,8 @@ def prepare_fresh_data_dir():
 
 DATA = prepare_fresh_data_dir()
 
-
 if (
-    os.getenv(
-        "PAPER_TRADING",
-        "true",
-    ).lower()
+    os.getenv("PAPER_TRADING", "true").lower()
     != "true"
 ):
     raise SystemExit(
@@ -86,170 +73,76 @@ if (
     )
 
 
-# ----------------------------------------------------------------------
-# TRADER-REPLICATION STRATEGY
-# ----------------------------------------------------------------------
-#
-# The strategy now reflects the observable behavior found in the trader
-# dataset:
-#
-# Layer A: 0.01 - 0.30
-#     Small, high-frequency positions.
-#
-# Layer B: 0.90 - 0.995
-#     Larger capital allocation.
-#
-# Rapid re-entry is allowed.
-# No artificial two-trade-per-market restriction.
-# No forced selling/hedging.
-# Final 60 seconds are blocked.
-# Dollar exposure remains the safety constraint.
-#
-# The internal trader trigger is unknown, so strategy.py still uses
-# observable market microstructure as a proxy.
-# ----------------------------------------------------------------------
-
 strategy = ConvergenceStrategy(
     bankroll=float(
-        os.getenv(
-            "STARTING_CAPITAL",
-            "1000",
-        )
+        os.getenv("STARTING_CAPITAL", "1000")
     ),
-
     max_market_exposure=float(
-        os.getenv(
-            "MAX_MARKET_EXPOSURE",
-            "100",
-        )
+        os.getenv("MAX_MARKET_EXPOSURE", "100")
     ),
-
     max_order=float(
-        os.getenv(
-            "MAX_ORDER_USD",
-            "10",
-        )
+        os.getenv("MAX_ORDER_USD", "10")
     ),
-
     layer_a_min_price=float(
-        os.getenv(
-            "LAYER_A_MIN_PRICE",
-            "0.01",
-        )
+        os.getenv("LAYER_A_MIN_PRICE", "0.01")
     ),
-
     layer_a_max_price=float(
-        os.getenv(
-            "LAYER_A_MAX_PRICE",
-            "0.30",
-        )
+        os.getenv("LAYER_A_MAX_PRICE", "0.30")
     ),
-
     layer_b_min_price=float(
-        os.getenv(
-            "LAYER_B_MIN_PRICE",
-            "0.90",
-        )
+        os.getenv("LAYER_B_MIN_PRICE", "0.90")
     ),
-
     layer_b_max_price=float(
-        os.getenv(
-            "LAYER_B_MAX_PRICE",
-            "0.995",
-        )
+        os.getenv("LAYER_B_MAX_PRICE", "0.995")
     ),
-
     layer_a_base_notional=float(
-        os.getenv(
-            "LAYER_A_BASE_NOTIONAL",
-            "0.15",
-        )
+        os.getenv("LAYER_A_BASE_NOTIONAL", "0.15")
     ),
-
     layer_a_max_notional=float(
-        os.getenv(
-            "LAYER_A_MAX_NOTIONAL",
-            "1.00",
-        )
+        os.getenv("LAYER_A_MAX_NOTIONAL", "1.00")
     ),
-
     layer_b_base_notional=float(
-        os.getenv(
-            "LAYER_B_BASE_NOTIONAL",
-            "2.00",
-        )
+        os.getenv("LAYER_B_BASE_NOTIONAL", "2.00")
     ),
-
     layer_b_max_notional=float(
-        os.getenv(
-            "LAYER_B_MAX_NOTIONAL",
-            "3.00",
-        )
+        os.getenv("LAYER_B_MAX_NOTIONAL", "3.00")
     ),
-
     start_sec=float(
-        os.getenv(
-            "START_TRADING_SECOND",
-            "0",
-        )
+        os.getenv("START_TRADING_SECOND", "0")
     ),
-
     stop_sec=float(
-        os.getenv(
-            "STOP_TRADING_SECOND",
-            "240",
-        )
+        os.getenv("STOP_TRADING_SECOND", "240")
     ),
-
     min_score=float(
-        os.getenv(
-            "MIN_SIGNAL_SCORE",
-            "0.50",
-        )
+        os.getenv("MIN_SIGNAL_SCORE", "0.50")
     ),
-
     layer_a_min_score=float(
-        os.getenv(
-            "LAYER_A_MIN_SCORE",
-            "0.50",
-        )
+        os.getenv("LAYER_A_MIN_SCORE", "0.50")
     ),
-
     layer_b_min_score=float(
-        os.getenv(
-            "LAYER_B_MIN_SCORE",
-            "0.82",
-        )
+        os.getenv("LAYER_B_MIN_SCORE", "0.82")
     ),
-
     max_depth_participation=float(
-        os.getenv(
-            "MAX_DEPTH_PARTICIPATION",
-            "0.25",
-        )
+        os.getenv("MAX_DEPTH_PARTICIPATION", "0.25")
     ),
-
     max_asset_exposure=float(
-        os.getenv(
-            "MAX_ASSET_EXPOSURE",
-            "35",
-        )
+        os.getenv("MAX_ASSET_EXPOSURE", "35")
     ),
-
     max_total_exposure=float(
-        os.getenv(
-            "MAX_TOTAL_EXPOSURE",
-            "100",
-        )
+        os.getenv("MAX_TOTAL_EXPOSURE", "300")
+    ),
+    hard_cutoff_seconds=float(
+        os.getenv("HARD_CUTOFF_SECONDS", "60")
+    ),
+    min_trade_gap_seconds=float(
+        os.getenv("MIN_TRADE_GAP_SECONDS", "2")
     ),
 )
-
 
 ledger = PaperLedger(
     DATA / "paper_state.json",
     strategy.bankroll,
 )
-
 ledger.save()
 
 research = ResearchLogger(
@@ -257,22 +150,17 @@ research = ResearchLogger(
     ledger,
 )
 
-
 markets = {}
 histories = {}
 pending = {}
 
-
-# Recover positions from persistent paper state.
 for _p0 in ledger.positions.values():
-
     if (
         _p0.get("condition")
         and _p0.get("slug")
         and _p0.get("start_ts")
         and _p0.get("end_ts")
     ):
-
         pending[_p0["condition"]] = {
             "condition": _p0["condition"],
             "id": _p0.get(
@@ -284,10 +172,7 @@ for _p0 in ledger.positions.values():
                 _p0["slug"],
             ),
             "slug": _p0["slug"],
-            "asset": _p0.get(
-                "asset",
-                "?",
-            ),
+            "asset": _p0.get("asset", "?"),
             "up": _p0.get(
                 "up_token",
                 _p0["token"]
@@ -306,7 +191,6 @@ for _p0 in ledger.positions.values():
             "enable_order_book": True,
         }
 
-
 last_disc = 0.0
 last_report = 0.0
 last_trade = {}
@@ -317,14 +201,33 @@ consecutive_errors = 0
 
 
 def asset_exposure(asset):
-    """
-    Total open cost for a given underlying asset.
-    """
-
     return sum(
         float(p.get("cost", 0))
         for p in ledger.positions.values()
         if p.get("asset") == asset
+    )
+
+
+def market_entry_state(condition, now):
+    entries = [
+        t for t in ledger.trades
+        if (
+            t.get("action") == "BUY"
+            and t.get("condition") == condition
+        )
+    ]
+
+    if not entries:
+        return 0, 0.0
+
+    first_ts = min(
+        float(t.get("ts", now))
+        for t in entries
+    )
+
+    return len(entries), max(
+        0.0,
+        float(now) - first_ts,
     )
 
 
@@ -363,9 +266,7 @@ def startup_data_check():
 
 
 def resolve_pending(now):
-
     for condition, m in list(pending.items()):
-
         if now < float(m.get("end_ts", 0)) + 2:
             continue
 
@@ -373,9 +274,15 @@ def resolve_pending(now):
             token, outcome, status = resolve(m)
 
             if token:
-                closed = ledger.settle(condition, token)
+                closed = ledger.settle(
+                    condition,
+                    token,
+                )
 
-                pnl = sum(float(x["pnl"]) for x in closed)
+                pnl = sum(
+                    float(x["pnl"])
+                    for x in closed
+                )
 
                 research.record_resolution(
                     ts=now,
@@ -385,8 +292,6 @@ def resolve_pending(now):
                     closed=closed,
                 )
 
-                # Human-readable settlement lines. Detailed resolution
-                # information remains in the research files.
                 for item in closed:
                     p(
                         f'   Settlement: '
@@ -431,8 +336,8 @@ def resolve_pending(now):
                 f'{type(e).__name__}: {e}'
             )
 
-def report(books):
 
+def report(books):
     global last_report
 
     now = time.time()
@@ -447,8 +352,6 @@ def report(books):
 
     research.record_pnl(now, m)
 
-    # Keep the console intentionally compact. Full diagnostics remain in
-    # trades/decisions/orderbooks/pnl research files.
     p(
         f'P&L   ours ${m["pnl"]:+.2f} | '
         f'realized ${m["realized"]:+.2f} | '
@@ -458,56 +361,34 @@ def report(books):
         f'positions {m["positions"]}'
     )
 
-def main():
 
+def main():
     global markets, last_disc, consecutive_errors, last_maintenance
-    
+
     startup_data_check()
 
     p(
         "BOT B | PAPER ONLY | "
         "TRADER BEHAVIORAL REPLICA | "
-        "NO COPY | "
-        "FRESH START ENABLED"
+        "V5 FOUR-REGIME MODEL"
     )
 
     while True:
-
         try:
-
             now = time.time()
 
-            # ----------------------------------------------------------
-            # MARKET DISCOVERY
-            # ----------------------------------------------------------
-
             if now - last_disc >= 20:
-
                 for m in discover():
-                    markets[
-                        m["condition"]
-                    ] = m
+                    markets[m["condition"]] = m
 
-                # Do not remove markets containing positions.
-                for condition, m in list(
-                    markets.items()
-                ):
-
+                for condition, m in list(markets.items()):
                     if any(
-                        p0.get("condition")
-                        == condition
+                        p0.get("condition") == condition
                         for p0 in ledger.positions.values()
                     ):
                         pending[condition] = m
-
-                    elif (
-                        m["end_ts"]
-                        < now - 30
-                    ):
-                        markets.pop(
-                            condition,
-                            None,
-                        )
+                    elif m["end_ts"] < now - 30:
+                        markets.pop(condition, None)
 
                 last_disc = now
 
@@ -525,44 +406,23 @@ def main():
                 )
 
                 p(
-                    f"MARKETS | "
-                    f"active={len(markets)} | "
+                    f"MARKETS | active={len(markets)} | "
                     f"pending_resolution={len(pending)} | "
                     f"assets={assets}"
                 )
 
-            # ----------------------------------------------------------
-            # RESOLUTION
-            # ----------------------------------------------------------
-
             resolve_pending(now)
-
             books = {}
 
-            # ----------------------------------------------------------
-            # MARKET LOOP
-            # ----------------------------------------------------------
-
-            for m in list(
-                markets.values()
-            ):
-
+            for m in list(markets.values()):
                 if (
                     not m.get("end_ts")
-                    or m["end_ts"]
-                    < now - 30
+                    or m["end_ts"] < now - 30
                 ):
                     continue
 
-                elapsed = (
-                    now
-                    - m["start_ts"]
-                )
-
-                left = (
-                    m["end_ts"]
-                    - now
-                )
+                elapsed = now - m["start_ts"]
+                left = m["end_ts"] - now
 
                 if (
                     left <= 0
@@ -571,66 +431,28 @@ def main():
                 ):
                     continue
 
-                # ------------------------------------------------------
-                # ORDER BOOK
-                # ------------------------------------------------------
-
                 try:
-
-                    (
-                        ub,
-                        ua,
-                        ubs,
-                        uas,
-                    ) = book(
-                        m["up"]
-                    )
-
-                    (
-                        db,
-                        da,
-                        dbs,
-                        das,
-                    ) = book(
-                        m["down"]
-                    )
-
+                    ub, ua, ubs, uas = book(m["up"])
+                    db, da, dbs, das = book(m["down"])
                 except Exception as e:
-
                     p(
-                        f'BOOK ERROR | '
-                        f'{m["asset"]} | '
+                        f'BOOK ERROR | {m["asset"]} | '
                         f'{m["slug"]} | '
                         f'{type(e).__name__}: {e}'
                     )
-
                     continue
 
                 books[m["up"]] = ub
                 books[m["down"]] = db
 
-                # ------------------------------------------------------
-                # HISTORY
-                # ------------------------------------------------------
-
                 histories.setdefault(
                     m["condition"],
-                    {
-                        "Up": [],
-                        "Down": [],
-                    },
+                    {"Up": [], "Down": []},
                 )
-
-                # ------------------------------------------------------
-                # ORDER BOOK RESEARCH SAMPLING
-                # ------------------------------------------------------
 
                 if (
                     now
-                    - ob_last.get(
-                        m["condition"],
-                        0,
-                    )
+                    - ob_last.get(m["condition"], 0)
                     >= float(
                         os.getenv(
                             "ORDERBOOK_SAMPLE_SECONDS",
@@ -638,7 +460,6 @@ def main():
                         )
                     )
                 ):
-
                     research.record_orderbook(
                         ts=now,
                         market=m,
@@ -651,71 +472,35 @@ def main():
                         down_ask=da,
                         down_depth=das,
                     )
-
-                    ob_last[
-                        m["condition"]
-                    ] = now
+                    ob_last[m["condition"]] = now
 
                 if ua is not None:
-
-                    histories[
-                        m["condition"]
-                    ]["Up"].append(
-                        (
-                            now,
-                            ua,
-                        )
+                    histories[m["condition"]]["Up"].append(
+                        (now, ua)
                     )
-
-                    histories[
-                        m["condition"]
-                    ]["Up"] = histories[
+                    histories[m["condition"]]["Up"] = histories[
                         m["condition"]
                     ]["Up"][-60:]
 
                 if da is not None:
-
-                    histories[
-                        m["condition"]
-                    ]["Down"].append(
-                        (
-                            now,
-                            da,
-                        )
+                    histories[m["condition"]]["Down"].append(
+                        (now, da)
                     )
-
-                    histories[
-                        m["condition"]
-                    ]["Down"] = histories[
+                    histories[m["condition"]]["Down"] = histories[
                         m["condition"]
                     ]["Down"][-60:]
 
-                # ------------------------------------------------------
-                # MARKET ORDER ACCEPTANCE
-                # ------------------------------------------------------
-
-                if not m[
-                    "accepting_orders"
-                ]:
+                if not m["accepting_orders"]:
                     continue
 
-                # ------------------------------------------------------
-                # EXPOSURE
-                # ------------------------------------------------------
-
-                exp = ledger.exposure(
-                    m["condition"]
-                )
-
-                aexp = asset_exposure(
-                    m["asset"]
-                )
-
+                exp = ledger.exposure(m["condition"])
+                aexp = asset_exposure(m["asset"])
                 total_exp = ledger.total_open_cost()
 
-                # ------------------------------------------------------
-                # STRATEGY DECISION
-                # ------------------------------------------------------
+                entry_count, seconds_since_first = market_entry_state(
+                    m["condition"],
+                    now,
+                )
 
                 sig = strategy.decide(
                     elapsed,
@@ -723,12 +508,8 @@ def main():
                     da,
                     ub,
                     db,
-                    histories[
-                        m["condition"]
-                    ]["Up"],
-                    histories[
-                        m["condition"]
-                    ]["Down"],
+                    histories[m["condition"]]["Up"],
+                    histories[m["condition"]]["Down"],
                     exp,
                     ledger.cash,
                     up_depth=uas,
@@ -736,11 +517,9 @@ def main():
                     now=now,
                     asset_exposure=aexp,
                     total_exposure=total_exp,
+                    market_entry_count=entry_count,
+                    seconds_since_first_entry=seconds_since_first,
                 )
-
-                # ------------------------------------------------------
-                # DECISION RESEARCH LOGGING
-                # ------------------------------------------------------
 
                 decision_interval = float(
                     os.getenv(
@@ -762,7 +541,6 @@ def main():
                 )
 
                 if should_record_decision:
-
                     research.record_decision(
                         ts=now,
                         market=m,
@@ -778,20 +556,7 @@ def main():
                         exposure=exp,
                         cash=ledger.cash,
                     )
-
-                    decision_last[
-                        m["condition"]
-                    ] = now
-
-                # ------------------------------------------------------
-                # TRADE ENTRY
-                #
-                # Trader behavior:
-                # rapid repeated entries are allowed.
-                #
-                # We therefore use a 2-second gap instead of the old
-                # 15-second restriction.
-                # ------------------------------------------------------
+                    decision_last[m["condition"]] = now
 
                 if (
                     sig
@@ -809,15 +574,6 @@ def main():
                         )
                     )
                 ):
-
-                    # --------------------------------------------------
-                    # FINAL 60-SECOND HARD CUTOFF
-                    #
-                    # No new positions during the final minute.
-                    # This is deliberately enforced here as the last
-                    # gate before the paper order is created.
-                    # --------------------------------------------------
-
                     hard_cutoff = float(
                         os.getenv(
                             "HARD_CUTOFF_SECONDS",
@@ -826,7 +582,6 @@ def main():
                     )
 
                     if left <= hard_cutoff:
-
                         p(
                             f'ENTRY BLOCKED | '
                             f'asset={m["asset"]} | '
@@ -834,12 +589,7 @@ def main():
                             f'left={left:.1f}s | '
                             f'reason=HARD_CUTOFF'
                         )
-
                         continue
-
-                    # --------------------------------------------------
-                    # TOKEN
-                    # --------------------------------------------------
 
                     token = (
                         m["up"]
@@ -853,18 +603,12 @@ def main():
                         else das
                     )
 
-                    # --------------------------------------------------
-                    # DEPTH CAP
-                    # --------------------------------------------------
-
                     depth_cap = max(
                         0.0,
                         float(ask_size)
                         * float(sig.price),
                     )
 
-                    # Re-read all risk limits immediately before creating
-                    # the paper order. This is the final portfolio gate.
                     total_exp = ledger.total_open_cost()
                     market_exp = ledger.exposure(
                         m["condition"]
@@ -875,17 +619,23 @@ def main():
 
                     global_remaining = max(
                         0.0,
-                        float(strategy.max_total_exposure)
+                        float(
+                            strategy.max_total_exposure
+                        )
                         - float(total_exp),
                     )
                     market_remaining = max(
                         0.0,
-                        float(strategy.max_market_exposure)
+                        float(
+                            strategy.max_market_exposure
+                        )
                         - float(market_exp),
                     )
                     asset_remaining = max(
                         0.0,
-                        float(strategy.max_asset_exposure)
+                        float(
+                            strategy.max_asset_exposure
+                        )
                         - float(asset_exp),
                     )
 
@@ -896,51 +646,43 @@ def main():
                         global_remaining,
                         market_remaining,
                         asset_remaining,
-                        max(0.0, float(ledger.cash)),
+                        max(
+                            0.0,
+                            float(ledger.cash),
+                        ),
                     )
-
-                    # --------------------------------------------------
-                    # MINIMUM PAPER FILL
-                    # --------------------------------------------------
 
                     min_fill = float(
                         os.getenv(
                             "MIN_PAPER_FILL_USD",
-                            "0.25",
+                            "0.10",
                         )
                     )
 
-                    if (
-                        exec_notional
-                        < min_fill
-                    ):
+                    if exec_notional < min_fill:
                         continue
-
-                    # --------------------------------------------------
-                    # POSITION METADATA
-                    # --------------------------------------------------
 
                     meta = {
                         "slug": m["slug"],
                         "asset": m["asset"],
-                        "start_ts": m[
-                            "start_ts"
-                        ],
-                        "end_ts": m[
-                            "end_ts"
-                        ],
+                        "start_ts": m["start_ts"],
+                        "end_ts": m["end_ts"],
                         "market_id": m["id"],
-                        "up_token": m[
-                            "up"
-                        ],
-                        "down_token": m[
-                            "down"
-                        ],
+                        "up_token": m["up"],
+                        "down_token": m["down"],
+                        "model_version": "V5",
+                        "entry_count_before": entry_count,
+                        "seconds_since_first_entry": seconds_since_first,
+                        "regime": (
+                            "CHEAP"
+                            if sig.price < 0.30
+                            else "MID"
+                            if sig.price < 0.70
+                            else "CORE"
+                            if sig.price < 0.90
+                            else "HIGH"
+                        ),
                     }
-
-                    # --------------------------------------------------
-                    # FINAL EXECUTION SAFETY RECHECK
-                    # --------------------------------------------------
 
                     if (
                         float(m["end_ts"]) - time.time()
@@ -954,10 +696,6 @@ def main():
                         )
                         continue
 
-                    # --------------------------------------------------
-                    # PAPER ENTRY
-                    # --------------------------------------------------
-
                     t = ledger.buy(
                         m["condition"],
                         token,
@@ -969,40 +707,27 @@ def main():
                         meta,
                     )
 
-                    pending[
-                        m["condition"]
-                    ] = m
+                    pending[m["condition"]] = m
+                    last_trade[m["condition"]] = now
 
-                    last_trade[
-                        m["condition"]
-                    ] = now
-
-                    # --------------------------------------------------
-                    # RESEARCH TRADE LOG
-                    # --------------------------------------------------
-
-                    momentum = 0.0
-
-                    if (
-                        "momentum="
-                        in sig.reason
-                    ):
-                        try:
-                            momentum = float(
-                                sig.reason.split(
-                                    "momentum="
-                                )[-1].split(
-                                    " "
-                                )[0]
-                            )
-                        except (
-                            ValueError,
-                            IndexError,
-                        ):
-                            momentum = 0.0
+                    p(
+                        f'TRADE PAPER | '
+                        f'asset={m["asset"]} | '
+                        f'side={sig.side} | '
+                        f'notional=${exec_notional:.2f} | '
+                        f'price=${sig.price:.4f} | '
+                        f'shares={exec_notional / sig.price:.4f} | '
+                        f'score={sig.score:.3f} | '
+                        f't={elapsed:.0f}s | '
+                        f'left={left:.0f}s | '
+                        f'ask_size={ask_size:.2f} | '
+                        f'depth_cap=${depth_cap:.2f} | '
+                        f'entry_count={entry_count} | '
+                        f'{sig.reason}'
+                    )
 
                     research.record_trade(
-                        trade=t,
+                        ts=now,
                         market=m,
                         elapsed=elapsed,
                         left=left,
@@ -1012,8 +737,9 @@ def main():
                         down_bid=db,
                         down_ask=da,
                         down_depth=das,
+                        trade=t,
                         score=sig.score,
-                        momentum=momentum,
+                        momentum=None,
                         reason=sig.reason,
                         cash_after=ledger.cash,
                         exposure_after=ledger.exposure(
@@ -1021,31 +747,9 @@ def main():
                         ),
                     )
 
-                    # --------------------------------------------------
-                    # TRADE LOG
-                    # --------------------------------------------------
+                    ledger.save()
 
-                    p(
-                        f'TRADE PAPER | '
-                        f'asset={m["asset"]} | '
-                        f'side={sig.side} | '
-                        f'notional=${t["notional"]:.2f} | '
-                        f'price=${t["price"]:.4f} | '
-                        f'shares={t["shares"]:.4f} | '
-                        f'score={sig.score:.3f} | '
-                        f't={elapsed:.0f}s | '
-                        f'left={left:.0f}s | '
-                        f'ask_size={ask_size:.2f} | '
-                        f'depth_cap=${depth_cap:.2f} | '
-                        f'asset_exposure='
-                        f'${asset_exposure(m["asset"]):.2f} | '
-                        f'cash=${ledger.cash:.2f} | '
-                        f'{sig.reason}'
-                    )
-
-            # ----------------------------------------------------------
-            # DATA MAINTENANCE
-            # ----------------------------------------------------------
+            report(books)
 
             if (
                 now
@@ -1057,64 +761,42 @@ def main():
                     )
                 )
             ):
-
-                try:
-
-                    research.maintenance()
-
-                    last_maintenance = now
-
-                    p(
-                        "DATA | maintenance=OK | "
-                        "old high-volume research "
-                        "data pruned"
-                    )
-
-                except Exception as e:
-
-                    p(
-                        f'DATA | maintenance error | '
-                        f'{type(e).__name__}: {e}'
-                    )
-
-            # ----------------------------------------------------------
-            # REPORT
-            # ----------------------------------------------------------
-
-            report(books)
+                research.maintenance()
+                last_maintenance = now
 
             consecutive_errors = 0
-
             time.sleep(
-                float(
-                    os.getenv(
-                        "LOOP_SECONDS",
-                        "1",
-                    )
+                max(
+                    0.05,
+                    float(
+                        os.getenv(
+                            "LOOP_SECONDS",
+                            "1",
+                        )
+                    ),
                 )
             )
 
         except KeyboardInterrupt:
-            return
+            p("STOP | KeyboardInterrupt")
+            break
 
         except Exception as e:
-
             consecutive_errors += 1
-
-            log.error(
-                "LOOP ERROR #%d | %s: %s",
-                consecutive_errors,
-                type(e).__name__,
-                e,
-                exc_info=True,
+            p(
+                f'LOOP ERROR | '
+                f'{type(e).__name__}: {e}'
             )
+            traceback.print_exc()
 
-            time.sleep(
-                min(
-                    30,
-                    3 * consecutive_errors,
+            if consecutive_errors >= 10:
+                p(
+                    "FATAL | "
+                    "10 consecutive loop errors"
                 )
-            )
+                raise
+
+            time.sleep(2)
 
 
 if __name__ == "__main__":
