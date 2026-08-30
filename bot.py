@@ -53,6 +53,9 @@ strategy = CapitalFirstStrategy(
 )
 
 ledger = PaperLedger(DATA / "paper_state.json", strategy.bankroll)
+# The ledger file is created here so startup validation never treats an
+# expected first-run artifact as a fatal missing dependency.
+ledger.save()
 research = ResearchLogger(DATA, ledger)
 
 markets = {}
