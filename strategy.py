@@ -387,8 +387,8 @@ class ConvergenceStrategy:
         regime,
         price,
         score,
-        entry_count,
-        elapsed_since_first_entry,
+        entry_count=0,
+        elapsed_since_first_entry=0.0,
     ):
         """Piecewise sizing curve with smaller starters and larger add-ons."""
         p = self._clamp(price, 0.01, 0.995)
