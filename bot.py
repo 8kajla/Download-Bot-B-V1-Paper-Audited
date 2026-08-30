@@ -377,7 +377,7 @@ def main():
     p(
         "BOT B | PAPER ONLY | "
         "TRADER BEHAVIORAL REPLICA | "
-        "V6 FOUR-REGIME STATE MODEL"
+        "V7 FOUR-REGIME STATE MODEL"
     )
 
     while True:
