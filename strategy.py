@@ -13,22 +13,22 @@ class Signal:
 
 
 class ConvergenceStrategy:
-    """BOT B V4 — distribution + payoff research model.
+    """BOT B V5 — four-regime, starter/add-on research model.
 
-    Design objective:
-      - Reproduce the trader's broad execution shape without hard-coding
-        a single historical hour.
-      - Increase CHEAP and MID participation.
-      - Reduce CORE over-selection.
-      - Keep HIGH less frequent but materially larger.
-      - Use the full $300 research exposure capacity.
-      - Preserve BUY-only, repeated entries, depth protection and the
-        existing 60-second market cutoff.
+    Evidence incorporated from the synchronized trader dataset:
+      * CHEAP is high-frequency, small-size, gap-tolerant and often later.
+      * MID is moderate-frequency with comparatively stable ~$2 sizing.
+      * CORE is less frequent and larger, with stronger confirmation.
+      * HIGH is rare, late and very capital-intensive.
+      * Repeated entries are a central behavior; first entries are generally
+        smaller than later entries, especially in CORE/HIGH.
 
-    This is a research model, not a claim of the trader's hidden trigger.
+    Important:
+      This is a behavioral research model, not a claim of the trader's
+      private/hidden trigger.
     """
 
-    VERSION = "V4"
+    VERSION = "V5"
 
     CHEAP_MIN, CHEAP_MAX = 0.01, 0.30
     MID_MIN, MID_MAX = 0.30, 0.70
@@ -41,22 +41,12 @@ class ConvergenceStrategy:
     HARD_MAX_ASSET_EXPOSURE = 35.0
     HARD_CUTOFF_SECONDS = 60.0
 
-    # Structural prior from the longer matched trader sample.
-    # We do not force exact quotas; this is used as a ranking prior.
+    # Historical reference only; never a hard quota.
     TARGETS = {
         "CHEAP": 0.476,
         "MID": 0.347,
         "CORE": 0.105,
         "HIGH": 0.072,
-    }
-
-    # V4 deliberately softens those targets so that one-hour noise does not
-    # force the bot into artificial quotas.
-    SOFT_TARGETS = {
-        "CHEAP": 0.42,
-        "MID": 0.34,
-        "CORE": 0.16,
-        "HIGH": 0.08,
     }
 
     def __init__(
@@ -84,7 +74,6 @@ class ConvergenceStrategy:
         min_trade_gap_seconds=2,
     ):
         self.bankroll = float(bankroll)
-
         self.max_market_exposure = min(
             max(0.0, float(max_market_exposure)),
             self.HARD_MAX_MARKET_EXPOSURE,
@@ -109,6 +98,7 @@ class ConvergenceStrategy:
 
         self.start_sec = float(start_sec)
         self.stop_sec = min(240.0, float(stop_sec))
+
         self.min_score = float(min_score)
         self.layer_a_min_score = float(layer_a_min_score)
         self.layer_b_min_score = float(layer_b_min_score)
@@ -117,17 +107,21 @@ class ConvergenceStrategy:
             0.25,
             max(0.01, float(max_depth_participation)),
         )
+        self.max_asset_exposure = min(
+            self.max_asset_exposure,
+            float(max_asset_exposure),
+        )
 
         self.hard_cutoff_seconds = max(
             60.0,
             float(hard_cutoff_seconds),
         )
-
         self.min_trade_gap_seconds = max(
             0.0,
             float(min_trade_gap_seconds),
         )
 
+        # Keep these for compatibility with the existing environment.
         self.layer_a_base_notional = max(
             0.10,
             float(layer_a_base_notional),
@@ -154,15 +148,11 @@ class ConvergenceStrategy:
             ),
         )
 
-        # Local decision counters. These are not persisted and are not used
-        # to fake outcomes; they only control distribution within one run.
-        self._regime_counts = {r: 0 for r in self.TARGETS}
-        self._total_decisions = 0
         self._last_trade_at = None
 
     @staticmethod
-    def _clamp(x, lo=0.0, hi=1.0):
-        return max(lo, min(hi, float(x)))
+    def _clamp(value, lo=0.0, hi=1.0):
+        return max(lo, min(hi, float(value)))
 
     def _regime(self, price):
         p = float(price)
@@ -217,7 +207,7 @@ class ConvergenceStrategy:
         def nearest(seconds):
             return min(
                 pts,
-                key=lambda x: abs((now - x[0]) - seconds),
+                key=lambda item: abs((now - item[0]) - seconds),
             )[1]
 
         p30 = nearest(30)
@@ -225,13 +215,12 @@ class ConvergenceStrategy:
 
         momentum = ask - p30
         acceleration = (
-            (ask - p10)
-            - (p10 - p30)
+            (ask - p10) - (p10 - p30)
         )
 
         return spread, momentum, acceleration
 
-    def _score(
+    def _base_score(
         self,
         ask,
         depth,
@@ -240,15 +229,13 @@ class ConvergenceStrategy:
         acceleration,
         elapsed,
     ):
-        ms = self._clamp(
-            0.5 + momentum * 8.0
-        )
-        acs = self._clamp(
-            0.5 + acceleration * 10.0
-        )
+        ms = self._clamp(0.5 + momentum * 8.0)
+        acs = self._clamp(0.5 + acceleration * 10.0)
+
         extremeness = self._clamp(
-            abs(ask - 0.5) / 0.5
+            abs(ask - 0.50) / 0.50
         )
+
         time_score = self._clamp(
             (elapsed - self.start_sec)
             / max(
@@ -256,17 +243,18 @@ class ConvergenceStrategy:
                 self.stop_sec - self.start_sec,
             )
         )
+
         spread_score = self._clamp(
             1.0
             - max(0.0, spread - 0.01)
             / 0.05
         )
 
-        # Normalize depth against the maximum usable $10 paper order.
-        depth_dollars = max(0.0, float(depth)) * max(
-            ask,
-            0.01,
+        depth_dollars = (
+            max(0.0, float(depth))
+            * max(ask, 0.01)
         )
+
         depth_score = self._clamp(
             depth_dollars / 20.0
         )
@@ -280,6 +268,68 @@ class ConvergenceStrategy:
             + 0.10 * spread_score
         )
 
+    def _regime_score(
+        self,
+        regime,
+        base_score,
+        momentum,
+        acceleration,
+        spread,
+        elapsed,
+    ):
+        """Regime-specific score shaping.
+
+        This is intentionally separate by regime rather than one universal
+        scoring policy.
+        """
+        score = base_score
+
+        if regime == "CHEAP":
+            # Cheap is driven more by extremeness and persistence than by
+            # requiring positive momentum.
+            score += 0.04 * self._clamp(
+                -momentum / 0.05
+            )
+            score += 0.03 * self._clamp(
+                -acceleration / 0.05
+            )
+
+            if elapsed >= 120:
+                score += 0.03
+
+        elif regime == "MID":
+            # MID retains a modest trend component.
+            score += 0.04 * self._clamp(
+                momentum / 0.05,
+                -1,
+                1,
+            )
+
+        elif regime == "CORE":
+            # CORE requires much stronger directional confirmation.
+            score += 0.08 * self._clamp(
+                momentum / 0.04,
+                -1,
+                1,
+            )
+            score += 0.06 * self._clamp(
+                acceleration / 0.03,
+                -1,
+                1,
+            )
+
+        elif regime == "HIGH":
+            # HIGH behaves more like late confirmation.
+            score += 0.10 * self._clamp(
+                momentum / 0.03,
+                -1,
+                1,
+            )
+            if elapsed >= 165:
+                score += 0.05
+
+        return self._clamp(score)
+
     def _allowed(
         self,
         regime,
@@ -289,6 +339,7 @@ class ConvergenceStrategy:
         spread,
         depth,
         elapsed,
+        entry_count,
     ):
         if depth <= 0:
             return False
@@ -296,148 +347,169 @@ class ConvergenceStrategy:
         if spread > 0.05:
             return False
 
-        if score < self.min_score:
-            return False
-
         if regime == "CHEAP":
-            # Much broader than V3.3 to recover the trader's high CHEAP
-            # participation. Do not require positive momentum.
             return (
-                score >= max(
-                    self.layer_a_min_score,
-                    0.50,
-                )
-                and momentum >= -0.010
-                and acceleration >= -0.012
+                score >= 0.49
+                and momentum >= -0.015
+                and acceleration >= -0.018
                 and spread <= 0.05
             )
 
         if regime == "MID":
-            # Moderate gate: less restrictive than V3.3 because MID was
-            # under-represented in the latest hour relative to the trader.
             return (
-                score >= max(
-                    self.min_score,
-                    0.61,
-                )
-                and momentum >= -0.001
-                and acceleration >= -0.004
-                and spread <= 0.04
+                score >= 0.60
+                and momentum >= -0.004
+                and acceleration >= -0.008
+                and spread <= 0.045
             )
 
         if regime == "CORE":
-            # Core remains tradeable, but requires a meaningfully stronger
-            # setup so it cannot dominate the distribution again.
             return (
-                score >= 0.79
-                and momentum >= 0.010
-                and acceleration >= 0.004
+                score >= 0.77
+                and momentum >= 0.008
+                and acceleration >= 0.002
                 and spread <= 0.03
             )
 
         if regime == "HIGH":
-            # High is intentionally selective. When it qualifies, it gets
-            # a larger size.
             return (
-                score >= max(
-                    self.layer_b_min_score,
-                    0.84,
-                )
-                and momentum >= 0.004
+                score >= 0.83
+                and momentum >= 0.003
                 and acceleration >= -0.001
                 and spread <= 0.03
+                and elapsed >= 90
             )
 
         return False
 
-    def _distribution_bias(self, regime):
-        total = self._total_decisions
-
-        if total < 10:
-            return {
-                "CHEAP": 0.10,
-                "MID": 0.04,
-                "CORE": -0.05,
-                "HIGH": -0.01,
-            }[regime]
-
-        observed = (
-            self._regime_counts[regime] / total
-        )
-
-        target = self.SOFT_TARGETS[regime]
-
-        # Positive when under target, negative when over target.
-        delta = target - observed
-
-        # Keep the correction modest. This is a steering mechanism,
-        # not a hard quota.
-        return self._clamp(
-            delta * 1.5,
-            -0.16,
-            0.16,
-        )
-
-    def _size(self, regime, price, score):
-        p = self._clamp(
-            price,
-            0.01,
-            0.995,
-        )
+    def _size(
+        self,
+        regime,
+        price,
+        score,
+        entry_count,
+        elapsed_since_first_entry,
+    ):
+        """Piecewise sizing curve with smaller starters and larger add-ons."""
+        p = self._clamp(price, 0.01, 0.995)
         s = self._clamp(score)
+        entry_count = max(0, int(entry_count))
+        age = max(
+            0.0,
+            float(elapsed_since_first_entry),
+        )
+
+        starter = entry_count == 0
 
         if regime == "CHEAP":
-            # Small but less tiny than V3.3.
             x = self._clamp(
                 (p - 0.01) / 0.29
             )
+            starter_size = (
+                0.20
+                + 0.55
+                * (x ** 0.65)
+                * (0.80 + 0.20 * s)
+            )
+
+            addon_size = (
+                0.30
+                + 1.15
+                * (x ** 0.55)
+                * (0.80 + 0.20 * s)
+            )
+
             return min(
                 self.max_order,
-                0.35
-                + 0.90
-                * (x ** 0.60)
-                * (0.80 + 0.20 * s),
+                starter_size
+                if starter
+                else addon_size,
             )
 
         if regime == "MID":
-            # Trader observed roughly $2-ish median behavior.
             x = self._clamp(
                 (p - 0.30) / 0.40
             )
+
+            starter_size = (
+                0.70
+                + 1.40
+                * (x ** 0.70)
+                * (0.82 + 0.18 * s)
+            )
+
+            addon_size = (
+                1.10
+                + 2.30
+                * (x ** 0.65)
+                * (0.82 + 0.18 * s)
+            )
+
             return min(
                 self.max_order,
-                1.00
-                + 2.60
-                * (x ** 0.65)
-                * (0.80 + 0.20 * s),
+                starter_size
+                if starter
+                else addon_size,
             )
 
         if regime == "CORE":
-            # Fewer trades, but meaningful size.
             x = self._clamp(
                 (p - 0.70) / 0.20
             )
+
+            starter_size = (
+                1.75
+                + 2.00
+                * (x ** 0.60)
+                * (0.85 + 0.15 * s)
+            )
+
+            addon_size = (
+                3.00
+                + 3.60
+                * (x ** 0.55)
+                * (0.85 + 0.15 * s)
+            )
+
             return min(
                 self.max_order,
-                6.00,
-                2.75
-                + 4.00
-                * (x ** 0.65)
-                * (0.82 + 0.18 * s),
+                6.50,
+                starter_size
+                if starter
+                else addon_size,
             )
 
         if regime == "HIGH":
-            # The trader's median was above our $10 ceiling. Strong HIGH
-            # opportunities therefore saturate at $10 when allowed.
             x = self._clamp(
                 (p - 0.90) / 0.095
             )
+
+            # The observed trader has a very large late HIGH allocation.
+            # We cannot exceed our $10 research order ceiling.
+            starter_size = (
+                2.50
+                + 3.50
+                * (x ** 0.55)
+                * (0.85 + 0.15 * s)
+            )
+
+            addon_size = (
+                5.00
+                + 5.00
+                * (x ** 0.45)
+                * (0.90 + 0.10 * s)
+            )
+
+            # Later add-ons can be slightly larger, matching the observed
+            # tendency for late HIGH entries to concentrate capital.
+            if not starter and age >= 90:
+                addon_size *= 1.05
+
             return min(
                 self.max_order,
-                2.50
-                + 8.50
-                * (x ** 0.50)
-                * (0.85 + 0.15 * s),
+                starter_size
+                if starter
+                else addon_size,
             )
 
         return 0.0
@@ -458,6 +530,8 @@ class ConvergenceStrategy:
         now=None,
         asset_exposure=0.0,
         total_exposure=0.0,
+        market_entry_count=0,
+        seconds_since_first_entry=0.0,
     ):
         now = (
             time.time()
@@ -478,8 +552,6 @@ class ConvergenceStrategy:
         ):
             return None
 
-        # Honor the existing 2-second trade gap. This controls burst timing,
-        # not the aggregate number of trades available over a full market.
         if (
             self._last_trade_at is not None
             and now - self._last_trade_at
@@ -529,25 +601,30 @@ class ConvergenceStrategy:
             if features is None:
                 continue
 
-            (
-                spread,
-                momentum,
-                acceleration,
-            ) = features
+            spread, momentum, acceleration = features
 
             ask = float(ask)
             depth = max(0.0, float(depth))
-
             regime = self._regime(ask)
+
             if regime is None:
                 continue
 
-            score = self._score(
+            base_score = self._base_score(
                 ask,
                 depth,
                 spread,
                 momentum,
                 acceleration,
+                elapsed,
+            )
+
+            score = self._regime_score(
+                regime,
+                base_score,
+                momentum,
+                acceleration,
+                spread,
                 elapsed,
             )
 
@@ -559,48 +636,49 @@ class ConvergenceStrategy:
                 spread,
                 depth,
                 elapsed,
+                market_entry_count,
             ):
                 continue
 
-            # V4 has two components:
-            #   1) signal quality
-            #   2) distribution steering
-            #
-            # A regime that is under-represented becomes easier to select;
-            # an over-represented regime needs a stronger signal.
-            distribution_bias = self._distribution_bias(
-                regime
-            )
+            # Small soft prior to prevent CORE from dominating the selected
+            # candidate when multiple regimes are simultaneously eligible.
+            bias = {
+                "CHEAP": 0.05,
+                "MID": 0.03,
+                "CORE": -0.06,
+                "HIGH": -0.01,
+            }[regime]
 
-            candidates.append(
-                {
-                    "side": side,
-                    "ask": ask,
-                    "depth": depth,
-                    "regime": regime,
-                    "score": score,
-                    "ranking": score + distribution_bias,
-                    "momentum": momentum,
-                    "acceleration": acceleration,
-                    "spread": spread,
-                    "distribution_bias": distribution_bias,
-                }
-            )
+            candidates.append({
+                "side": side,
+                "ask": ask,
+                "depth": depth,
+                "regime": regime,
+                "score": score,
+                "ranking": score + bias,
+                "momentum": momentum,
+                "acceleration": acceleration,
+                "spread": spread,
+            })
 
         if not candidates:
             return None
 
         best = max(
             candidates,
-            key=lambda x: x["ranking"],
+            key=lambda item: item["ranking"],
+        )
+
+        desired = self._size(
+            best["regime"],
+            best["ask"],
+            best["score"],
+            market_entry_count,
+            seconds_since_first_entry,
         )
 
         size = min(
-            self._size(
-                best["regime"],
-                best["ask"],
-                best["score"],
-            ),
+            desired,
             remaining,
         )
 
@@ -626,21 +704,21 @@ class ConvergenceStrategy:
         if size < 0.10:
             return None
 
-        self._regime_counts[
-            best["regime"]
-        ] += 1
-        self._total_decisions += 1
         self._last_trade_at = now
 
+        mode = "STARTER" if market_entry_count == 0 else "ADD_ON"
+
         reason = (
-            f"V4 regime={best['regime']} "
+            f"V5 regime={best['regime']} "
+            f"mode={mode} "
+            f"entry_count={int(market_entry_count)} "
             f"score={best['score']:.3f} "
             f"momentum={best['momentum']:+.4f} "
             f"accel={best['acceleration']:+.4f} "
             f"spread={best['spread']:.4f} "
             f"depth={best['depth']:.2f} "
-            f"dist_bias={best['distribution_bias']:+.3f} "
             f"elapsed={elapsed:.1f}s "
+            f"since_first={float(seconds_since_first_entry):.1f}s "
             f"seconds_left={300.0 - elapsed:.1f} "
             f"global_exposure={float(total_exposure):.2f} "
             f"global_cap={self.max_total_exposure:.2f} "
