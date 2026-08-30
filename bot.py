@@ -459,7 +459,7 @@ def main():
                 last_trade[market["condition"]] = now
 
                 p(
-                    f"TRADE PAPER | V13 COPY | asset={market['asset']} "
+                    f"TRADE PAPER | V13 50PCT SIZE | asset={market['asset']} "
                     f"| side={signal.side} | notional=${notion:.2f} "
                     f"| bid=${signal.price:.4f} | target=${target:.2f} "
                     f"| entry_count={state['count']} | burst={state['burst_position']} "
